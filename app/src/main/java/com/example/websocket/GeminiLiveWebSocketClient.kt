@@ -88,6 +88,13 @@ class GeminiLiveWebSocketClient(
                 val setupJson = JSONObject().apply {
                     val setupObj = JSONObject().apply {
                         put("model", activeModel)
+                        put("systemInstruction", JSONObject().apply {
+                            put("parts", org.json.JSONArray().apply {
+                                put(JSONObject().apply {
+                                    put("text", "You are a precise real-time voice typing engine. Ignore continuous background noise such as ceiling fans, air conditioning, road noise, television audio, and distant chatter. Focus exclusively on the primary speaker's voice. Produce clean, punctuated text and remove filler words (um, uh, like) and self-corrections.")
+                                })
+                            })
+                        })
                         put("generationConfig", JSONObject().apply {
                             put("responseModalities", org.json.JSONArray().apply {
                                 put("TEXT")
@@ -275,6 +282,15 @@ class GeminiLiveWebSocketClient(
             Log.e(TAG, "Error sending audio chunk", e)
             false
         }
+    }
+
+    /**
+     * Send a 100ms zero-PCM padding chunk during audio recorder session restarts
+     * to keep WebSocket VAD state continuously alive without dropouts.
+     */
+    fun sendZeroPaddingChunk(): Boolean {
+        val zeroBuffer = ByteArray(3200) // 100ms at 16kHz mono 16-bit PCM = 3200 bytes
+        return sendAudioChunk(zeroBuffer)
     }
 
     /**
