@@ -364,16 +364,17 @@ class AudioRecorder(
 
         val rms = sqrt(sumSquares / sampleCount)
 
-        // Very low noise floor (18.0) and high sensitivity for immediate response to whispers
-        val noiseFloor = 18.0
+        // Lower noise floor so quieter speech still moves the wave and glow
+        val noiseFloor = 8.0
         val effectiveRms = (rms - noiseFloor).coerceAtLeast(0.0)
         if (effectiveRms <= 0.0) return 0f
 
-        // High dynamic range: boost subtle voice inputs and scale smoothly to full volume
-        val normalizedLinear = (effectiveRms / 1600.0).coerceIn(0.0, 1.0)
+        // More aggressive scaling for the visualizer only
+        val normalizedLinear = (effectiveRms / 900.0).coerceIn(0.0, 1.0)
         val boosted = sqrt(normalizedLinear).toFloat()
 
-        return boosted.coerceIn(0f, 1f)
+        // Extra visual boost (does NOT affect the PCM sent to Gemini)
+        return (boosted * 1.55f).coerceIn(0f, 1f)
     }
 }
 
