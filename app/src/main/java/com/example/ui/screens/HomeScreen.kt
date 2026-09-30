@@ -101,7 +101,7 @@ fun HomeScreen(
                 CenterAlignedTopAppBar(
                     title = {
                         Text(
-                            text = "|||| Wispr Flow",
+                            text = "|||| VoxStream",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF1E2430)

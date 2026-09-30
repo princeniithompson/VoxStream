@@ -106,7 +106,7 @@ fun DictionaryScreen(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "|||| Wispr Flow",
+                            text = "|||| VoxStream",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onBackground
