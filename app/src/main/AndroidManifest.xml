@@ -59,6 +59,21 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
+        <!-- Silent Companion Input Method Service for caret-level commitText injection -->
+        <service
+            android:name=".service.VoxStreamInputMethodService"
+            android:enabled="true"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.inputmethodservice"
+                android:resource="@xml/method_service_meta_data" />
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -45,9 +45,13 @@ class VoxStreamAccessibilityService : AccessibilityService() {
                 AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED or
                 AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-        info.flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+        var flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            flags = flags or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
+        }
+        info.flags = flags
         info.notificationTimeout = 30
         serviceInfo = info
 
@@ -255,19 +259,48 @@ class VoxStreamAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Injects transcribed text into the target active editable field via direct typing (Magic Pen):
-     * - Uses direct ACTION_SET_TEXT to write cleanly at the cursor position.
-     * - Completely avoids touching the system clipboard (no "pasted from clipboard" toast, no dots in keyboard).
-     * - Intelligently detects and strips placeholder text (like "Ask Gemini").
-     * - Preserves any existing text/drafts and splices the dictated text cleanly at the cursor.
+     * Injects transcribed text into the target active editable field using the Hybrid Input Engine:
+     * 1. Priority 1 (Android 13+ AccessibilityInputConnection):
+     *    Uses inputMethod.currentInputConnection.commitText(text, 1, null) directly at the blinking caret!
+     * 2. Priority 2 (Companion VoxStreamInputMethodService):
+     *    Uses VoxStreamInputMethodService.commitText(text) via the live InputConnection.
+     * 3. Priority 3 (Direct Caret ActionSetText):
+     *    Uses injectTextSafely(targetNode, newText) with cursor bounds checking and length > 15 safety.
+     * 4. Zero clipboard usage: Leaves user's clipboard and keyboard history completely untouched!
      */
     fun injectText(newText: String): Boolean {
         if (newText.isEmpty()) return false
-        val targetNode = getActiveEditableNode() ?: return false
-        val targetPkg = targetNode.packageName?.toString() ?: ""
 
-        Log.d(TAG, "Executing direct typing (Magic Pen) for target app ($targetPkg), textLen=${newText.length}")
-        return injectTextSafely(targetNode, newText)
+        // Priority 1: Modern Android 13+ (API 33+) AccessibilityInputConnection
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                val a11yIm = inputMethod
+                val a11yIc = a11yIm?.currentInputConnection
+                if (a11yIc != null) {
+                    a11yIc.commitText(newText, 1, null)
+                    Log.d(TAG, "AccessibilityInputConnection.commitText completed successfully (caret-level, zero-clipboard)")
+                    return true
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "AccessibilityInputConnection injection error: ${e.message}")
+            }
+        }
+
+        // Priority 2: Companion VoxStreamInputMethodService
+        if (VoxStreamInputMethodService.commitText(newText)) {
+            Log.d(TAG, "VoxStreamInputMethodService committed text successfully")
+            return true
+        }
+
+        // Priority 3: Direct node editing via injectTextSafely
+        val targetNode = getActiveEditableNode()
+        if (targetNode != null) {
+            val targetPkg = targetNode.packageName?.toString() ?: ""
+            Log.d(TAG, "Fallback to direct node injection for $targetPkg")
+            return injectTextSafely(targetNode, newText)
+        }
+
+        return false
     }
 
     private fun performPasteInjection(targetNode: AccessibilityNodeInfo, newText: String): Boolean {
