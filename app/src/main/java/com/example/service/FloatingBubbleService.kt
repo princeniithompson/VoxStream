@@ -81,6 +81,7 @@ class FloatingBubbleService : Service() {
         sessionManager = FloatingDictationSessionManager(
             onTranscriptUpdated = { fullText ->
                 overlayWindowManager.overlayTranscript.value = fullText
+                FloatingBubbleManager.updateSmartDefaultPolishMode(fullText)
             },
             onInterimReceived = { _ -> },
             onFinalSegmentReceived = { _ ->
@@ -345,13 +346,18 @@ class FloatingBubbleService : Service() {
                     val appContext = AppContextResolver.resolve(this@FloatingBubbleService, currentPkg)
                     val category = AppClassifier.classify(currentPkg, appContext?.appName)
                     val appName = appContext?.appName ?: "App"
+                    val isAiApp = category == AppCategory.AI
+                    val aiMode = if (isAiApp) FloatingBubbleManager.selectedAiPolishMode.value else null
+                    val contextSnippet = if (isAiApp) VoxStreamAccessibilityService.instance?.extractRecentConversationContext() else null
 
                     withContext(Dispatchers.IO) {
                         result = FloatingPolishClient.polishTranscript(
                             apiKey = apiKey,
                             rawTranscript = rawTranscript,
                             category = category,
-                            appName = appName
+                            appName = appName,
+                            aiPolishMode = aiMode,
+                            conversationContext = contextSnippet
                         )
                     }
                 }

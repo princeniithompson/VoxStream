@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -74,7 +76,68 @@ fun FloatingActionRow(
     onCompleteClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val isAiApp by FloatingBubbleManager.isCurrentAppAi.collectAsState()
+    val selectedAiMode by FloatingBubbleManager.selectedAiPolishMode.collectAsState()
+
     Column(modifier = modifier.fillMaxWidth()) {
+        // AI-Aware Mode Toggle (Displayed strictly inside AI apps)
+        if (isAiApp) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(Color(0x381E1E28))
+                    .border(1.dp, Color(0x26FFFFFF), RoundedCornerShape(15.dp))
+                    .padding(2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Mode 1: Clean Message
+                val isClean = selectedAiMode == com.example.service.floating.AiPolishMode.CLEAN_MESSAGE
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(if (isClean) Color(0x38FFFFFF) else Color.Transparent)
+                        .clickable(enabled = !isPolishing && !isFinalizing) {
+                            FloatingBubbleManager.setAiPolishMode(com.example.service.floating.AiPolishMode.CLEAN_MESSAGE)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "💬 Clean Message",
+                        color = if (isClean) Color.White else Color(0xFF94A3B8),
+                        fontSize = 11.5.sp,
+                        fontWeight = if (isClean) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+
+                // Mode 2: Optimize as Prompt
+                val isPrompt = selectedAiMode == com.example.service.floating.AiPolishMode.OPTIMIZE_PROMPT
+                Box(
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(if (isPrompt) palette.primaryVibrant.copy(alpha = 0.35f) else Color.Transparent)
+                        .clickable(enabled = !isPolishing && !isFinalizing) {
+                            FloatingBubbleManager.setAiPolishMode(com.example.service.floating.AiPolishMode.OPTIMIZE_PROMPT)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "✨ Optimize Prompt",
+                        color = if (isPrompt) Color.White else Color(0xFF94A3B8),
+                        fontSize = 11.5.sp,
+                        fontWeight = if (isPrompt) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -109,6 +172,13 @@ fun FloatingActionRow(
             }
 
             // 2. Polish Button
+            val polishLabel = when {
+                isPolishing -> "Polishing..."
+                !isAiApp -> "Polish"
+                selectedAiMode == com.example.service.floating.AiPolishMode.OPTIMIZE_PROMPT -> "Optimize"
+                else -> "Clean"
+            }
+
             PillActionButton(
                 onClick = onPolishClick,
                 backgroundColor = Color(0x24FFFFFF),
@@ -129,14 +199,14 @@ fun FloatingActionRow(
                         )
                     } else {
                         Text(
-                            text = "✦",
+                            text = if (isAiApp && selectedAiMode == com.example.service.floating.AiPolishMode.OPTIMIZE_PROMPT) "✨" else "✦",
                             color = palette.primaryVibrant,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = "Polish",
+                            text = polishLabel,
                             color = Color(0xFFE2E8F0),
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.Medium

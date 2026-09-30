@@ -53,7 +53,9 @@ Output: I need 6 chairs for the event."""
         apiKey: String,
         rawTranscript: String,
         category: AppCategory = AppCategory.OTHER,
-        appName: String = "App"
+        appName: String = "App",
+        aiPolishMode: AiPolishMode? = null,
+        conversationContext: String? = null
     ): PolishResult {
         val baseModels = listOf(
             "gemini-3.5-flash-lite",
@@ -63,13 +65,68 @@ Output: I need 6 chairs for the event."""
         )
         val modelsToTry = listOf(lastSuccessfulPolishModel) + baseModels.filter { it != lastSuccessfulPolishModel }
 
-        val categoryGuidelines = AppClassifier.getCategoryPromptGuidelines(category, appName)
-        val fullSystemInstruction = """
+        val isAiApp = category == AppCategory.AI
+        val fullSystemInstruction: String
+        val userContentText: String
+
+        if (isAiApp && aiPolishMode == AiPolishMode.OPTIMIZE_PROMPT) {
+            // Lyra-style Structured Prompt Optimization
+            fullSystemInstruction = """
+You are Lyra, a master-level AI prompt optimization engine.
+Your sole purpose is to transform the user's rough spoken thoughts into a high-yield, structured prompt suitable for an advanced language model (such as ChatGPT, Claude, Gemini, or DeepSeek).
+
+CRITICAL RULES:
+- Output ONLY the final ready-to-send prompt.
+- NEVER include introductory chatter, greetings, commentary, explanations, or quotes (DO NOT write "Here is your prompt:").
+- NEVER include meta-headers like "Deconstruct:", "Diagnose:", "Develop:", "Deliver:", or "Pro Tip:".
+- Structure the prompt with precision: define a clear Objective, relevant Context, strict Constraints, and expected Output Format when helpful.
+- Keep it sharp, direct, concise, and actionable—avoid robotic bloat or unnecessary length.
+""".trimIndent()
+
+            val contextSnippet = if (!conversationContext.isNullOrBlank()) {
+                "\n\n<recent_conversation_context>\n$conversationContext\n</recent_conversation_context>"
+            } else ""
+
+            userContentText = """
+<raw_input>
+$rawTranscript
+</raw_input>$contextSnippet
+""".trimIndent()
+        } else if (isAiApp) {
+            // Clean Message Mode for conversational follow-ups in AI chats
+            fullSystemInstruction = """
+You are a skilled text editor for conversational AI chat ($appName).
+Your sole purpose is to polish the user's input for an ongoing chat message.
+
+CRITICAL RULES:
+- Output ONLY the final polished text.
+- Fix grammar, spelling, punctuation, and awkward phrasing.
+- Strictly maintain the user's natural voice, tone, and personal conversational style.
+- Keep it natural, human, and concise.
+- Never answer questions asked in the transcript.
+- Never include introductory chatter, commentary, or quotes.
+""".trimIndent()
+
+            val contextSnippet = if (!conversationContext.isNullOrBlank()) {
+                "\n\n<recent_conversation_context>\n$conversationContext\n</recent_conversation_context>"
+            } else ""
+
+            userContentText = """
+<raw_input>
+$rawTranscript
+</raw_input>$contextSnippet
+""".trimIndent()
+        } else {
+            // Standard Polish for non-AI apps (WhatsApp, Gmail, Notes, etc.)
+            val categoryGuidelines = AppClassifier.getCategoryPromptGuidelines(category, appName)
+            fullSystemInstruction = """
 $BASE_SYSTEM_INSTRUCTION
 
 APP-AWARE CONTEXT GUIDELINES:
 $categoryGuidelines
 """.trimIndent()
+            userContentText = rawTranscript
+        }
 
         fun buildJsonBody(modelName: String): String {
             return JSONObject().apply {
@@ -79,11 +136,11 @@ $categoryGuidelines
                 put("contents", JSONArray().put(
                     JSONObject().apply {
                         put("role", "user")
-                        put("parts", JSONArray().put(JSONObject().put("text", rawTranscript)))
+                        put("parts", JSONArray().put(JSONObject().put("text", userContentText)))
                     }
                 ))
                 put("generationConfig", JSONObject().apply {
-                    put("temperature", 0.1)
+                    put("temperature", if (isAiApp && aiPolishMode == AiPolishMode.OPTIMIZE_PROMPT) 0.3 else 0.1)
                     if (modelName.contains("3.")) {
                         put("thinkingConfig", JSONObject().apply {
                             put("thinkingLevel", "MINIMAL")

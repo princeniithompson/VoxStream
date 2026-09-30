@@ -154,4 +154,11 @@ The user is typing in $appName.
 """.trimIndent()
         }
     }
+
+    /**
+     * Determines whether the given package or app represents an AI chat app.
+     */
+    fun isAiChatApp(packageName: String?, resolvedAppName: String? = null): Boolean {
+        return classify(packageName, resolvedAppName) == AppCategory.AI
+    }
 }

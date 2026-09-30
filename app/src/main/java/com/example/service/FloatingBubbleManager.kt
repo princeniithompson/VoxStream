@@ -50,6 +50,12 @@ object FloatingBubbleManager {
     private val _lockedSessionContext = MutableStateFlow<String?>(null)
     val lockedSessionContext: StateFlow<String?> = _lockedSessionContext.asStateFlow()
 
+    private val _selectedAiPolishMode = MutableStateFlow(com.example.service.floating.AiPolishMode.CLEAN_MESSAGE)
+    val selectedAiPolishMode: StateFlow<com.example.service.floating.AiPolishMode> = _selectedAiPolishMode.asStateFlow()
+
+    private val _isCurrentAppAi = MutableStateFlow(false)
+    val isCurrentAppAi: StateFlow<Boolean> = _isCurrentAppAi.asStateFlow()
+
     private val _isAccessibilityConnected = MutableStateFlow(false)
     val isAccessibilityConnected: StateFlow<Boolean> = _isAccessibilityConnected.asStateFlow()
 
@@ -173,6 +179,34 @@ object FloatingBubbleManager {
     fun updateCurrentForegroundPackage(pkg: String?) {
         if (!AppContextResolver.isIgnoredPackage(null, pkg)) {
             _currentForegroundPackage.value = pkg
+            _isCurrentAppAi.value = AppClassifier.isAiChatApp(pkg)
+        }
+    }
+
+    fun setAiPolishMode(mode: com.example.service.floating.AiPolishMode) {
+        _selectedAiPolishMode.value = mode
+    }
+
+    /**
+     * Smart Default Heuristic:
+     * - Longer input (>= 12 words or >= 60 chars) or prompt-intent keywords -> OPTIMIZE_PROMPT
+     * - Shorter / conversational follow-up -> CLEAN_MESSAGE
+     */
+    fun updateSmartDefaultPolishMode(transcript: String) {
+        if (transcript.isBlank()) return
+        val wordCount = transcript.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+        val charCount = transcript.length
+        val lower = transcript.lowercase()
+        val hasTaskIntent = listOf(
+            "build", "create", "write code", "analyze", "draft", "explain", "research",
+            "how to", "generate", "code", "design", "compose", "optimize", "rewrite",
+            "refactor", "develop", "implement", "solve", "compare", "evaluate"
+        ).any { lower.contains(it) }
+
+        if (wordCount >= 12 || charCount >= 60 || hasTaskIntent) {
+            _selectedAiPolishMode.value = com.example.service.floating.AiPolishMode.OPTIMIZE_PROMPT
+        } else {
+            _selectedAiPolishMode.value = com.example.service.floating.AiPolishMode.CLEAN_MESSAGE
         }
     }
 

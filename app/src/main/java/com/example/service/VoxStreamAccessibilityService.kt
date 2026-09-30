@@ -553,4 +553,39 @@ class VoxStreamAccessibilityService : AccessibilityService() {
 
         return null
     }
+
+    /**
+     * Safely extracts visible conversation context from the locked target application window.
+     * Collects the last 2-3 visible non-editable text snippets (e.g. preceding AI replies).
+     */
+    fun extractRecentConversationContext(): String? {
+        val targetNode = getActiveEditableNode()
+        val root = rootInActiveWindow ?: targetNode ?: return null
+        val snippets = mutableListOf<String>()
+
+        try {
+            fun traverse(node: AccessibilityNodeInfo, depth: Int) {
+                if (depth > 6 || snippets.size >= 4) return
+                val text = node.text?.toString()?.trim()
+                if (!text.isNullOrBlank() && text.length > 8 && node != targetNode) {
+                    val cls = node.className?.toString() ?: ""
+                    if (!cls.contains("Button", ignoreCase = true) &&
+                        !cls.contains("EditText", ignoreCase = true) &&
+                        !cls.contains("ImageView", ignoreCase = true)
+                    ) {
+                        snippets.add(text.take(300))
+                    }
+                }
+                for (i in 0 until node.childCount) {
+                    val child = node.getChild(i) ?: continue
+                    traverse(child, depth + 1)
+                }
+            }
+            traverse(root, 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "Notice traversing conversation context: ${e.message}")
+        }
+
+        return if (snippets.isNotEmpty()) snippets.takeLast(3).joinToString("\n---\n") else null
+    }
 }
