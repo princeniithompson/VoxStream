@@ -159,167 +159,117 @@ class VoxStreamAccessibilityService : AccessibilityService() {
     /**
      * Determines whether the given node contains real, genuine user text versus an empty
      * field or a placeholder/hint string.
+     * Safety check: Ignores isShowingHintText when content length exceeds 15 characters,
+     * ensuring that long text in apps like Chrome or WhatsApp is never identified as a hint and overwritten.
      */
     fun extractGenuineText(node: AccessibilityNodeInfo): String {
         val rawText = node.text?.toString() ?: ""
-        if (rawText.isBlank()) {
-            return ""
-        }
+        if (rawText.isBlank()) return ""
 
-        // 1. Safety override: If the rawText is longer than 15 characters, it is genuine user content / article / text.
-        // WebViews (Chrome), custom editors, and chat apps often erroneously report isShowingHintText = true.
-        // A hint is never a long sentence or paragraph.
+        // SAFETY CHECK: When content length exceeds 15 characters, ignore isShowingHintText
+        // and placeholder checks. Long text in Chrome, WhatsApp, etc. is NEVER a hint.
         if (rawText.length > 15) {
             return rawText
         }
 
-        // 2. Android 8.0+ API check: if the system explicitly flags that the node is showing hint text (for short strings <= 15 chars)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             try {
-                if (node.isShowingHintText) {
-                    return ""
-                }
-            } catch (_: Throwable) {
-                // Ignore fallback
-            }
-        }
-
-        // 3. Direct hint text comparison
-        val hintText = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                if (node.isShowingHintText) return ""
+            } catch (e: Throwable) {}
             try {
-                node.hintText?.toString()
-            } catch (_: Throwable) {
-                null
-            }
-        } else {
-            null
+                val hintText = node.hintText?.toString()
+                if (!hintText.isNullOrBlank() && rawText.trim().equals(hintText.trim(), ignoreCase = true)) return ""
+            } catch (e: Throwable) {}
         }
 
-        if (!hintText.isNullOrBlank() && rawText.trim() == hintText.trim()) {
-            return ""
-        }
-
-        // 4. Known app-specific placeholder strings for short text (e.g. Google Search, WhatsApp, Google Keep)
-        val trimmed = rawText.trim()
+        val trimmed = rawText.trim().lowercase()
         val knownPlaceholders = setOf(
-            "note",
-            "note…",
-            "note...",
-            "take a note",
-            "take a note…",
-            "take a note...",
-            "title",
-            "title…",
-            "title...",
-            "ask google…",
-            "ask google...",
-            "search…",
-            "search...",
-            "search or type url",
-            "search or type web address",
-            "type a message",
-            "message",
-            "send a message",
-            "write a message",
-            "write a comment…",
-            "write a comment...",
-            "add a comment…",
-            "add a comment..."
+            "ask gemini", "ask gemini…", "ask gemini...",
+            "ask google", "ask google…", "ask google...",
+            "search", "search…", "search...",
+            "search or type url", "search or type web address",
+            "type a message", "message", "send a message", "write a message",
+            "write a comment…", "write a comment...", "add a comment…", "add a comment...",
+            "take a note", "take a note…", "take a note...", "note", "note…", "note...", "title"
         )
-        if (knownPlaceholders.contains(trimmed.lowercase())) {
-            return ""
-        }
+        if (knownPlaceholders.contains(trimmed)) return ""
 
         return rawText
     }
 
     /**
-     * Injects transcribed text into the target active editable field:
-     * - Uses ACTION_SET_TEXT as the primary method with zero clipboard interaction.
-     * - If cursor position (selStart/selEnd) is valid, inserts new text at the cursor.
-     * - If cursor position is -1 but genuineExistingText is NOT blank, appends new text to the end with a space.
-     * - If genuineExistingText is blank, sets the field to the new text.
-     * - Only falls back to performPasteInjection if ACTION_SET_TEXT explicitly fails or returns false.
-     * - Leaves user clipboard completely untouched whenever field injection succeeds.
+     * Injects transcribed text into the target active editable field via direct node editing (ACTION_SET_TEXT):
+     * 1. Uses extractGenuineText to preserve existing user drafts while safely ignoring hints like "Ask Gemini".
+     * 2. Determines cursor position safely without clobbering existing text.
+     * 3. Splices the dictated text into the existing text at cursor.
+     * 4. Performs direct text insertion via ACTION_SET_TEXT (zero clipboard touch).
+     * 5. Updates cursor position to sit immediately after the newly inserted text.
+     */
+    fun injectTextSafely(node: AccessibilityNodeInfo, dictatedText: String): Boolean {
+        // Extract genuine user text, safely ignoring isShowingHintText when length > 15 chars
+        val currentText = extractGenuineText(node)
+        val rawText = node.text?.toString() ?: ""
+
+        // Determine current cursor position to insert text correctly
+        var selectionStart = currentText.length
+        var selectionEnd = currentText.length
+
+        val selStart = try { node.textSelectionStart } catch (_: Throwable) { -1 }
+        val selEnd = try { node.textSelectionEnd } catch (_: Throwable) { -1 }
+
+        if (selStart in 0..rawText.length && selEnd in selStart..rawText.length) {
+            // Ensure bounds are safe relative to currentText
+            selectionStart = selStart.coerceIn(0, currentText.length)
+            selectionEnd = selEnd.coerceIn(0, currentText.length)
+        }
+
+        // Splice the dictated text into the existing text at the cursor
+        val beforeCursor = currentText.substring(0, selectionStart)
+        val afterCursor = currentText.substring(selectionEnd)
+
+        // Add a space if needed based on spacing logic
+        val space = if (beforeCursor.isNotEmpty() && !beforeCursor.endsWith(" ") && !beforeCursor.endsWith("\n")) " " else ""
+        val textToInsert = space + dictatedText
+
+        val newText = beforeCursor + textToInsert + afterCursor
+
+        // Perform direct node editing via ACTION_SET_TEXT
+        val arguments = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
+        }
+        val success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+        Log.d(TAG, "injectTextSafely ACTION_SET_TEXT result: $success, len=${newText.length}")
+
+        if (success) {
+            // Update the cursor position to sit immediately after the newly inserted text
+            val newCursorPos = selectionStart + textToInsert.length
+            val selectionArgs = Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, newCursorPos)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, newCursorPos)
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectionArgs)
+            return true
+        }
+
+        return false
+    }
+
+    /**
+     * Injects transcribed text into the target active editable field via direct typing (Magic Pen):
+     * - Uses direct ACTION_SET_TEXT to write cleanly at the cursor position.
+     * - Completely avoids touching the system clipboard (no "pasted from clipboard" toast, no dots in keyboard).
+     * - Intelligently detects and strips placeholder text (like "Ask Gemini").
+     * - Preserves any existing text/drafts and splices the dictated text cleanly at the cursor.
      */
     fun injectText(newText: String): Boolean {
         if (newText.isEmpty()) return false
         val targetNode = getActiveEditableNode() ?: return false
         val targetPkg = targetNode.packageName?.toString() ?: ""
 
-        // Primary Injection: Direct ACTION_SET_TEXT at cursor without touching system clipboard
-        try {
-            val genuineExistingText = extractGenuineText(targetNode)
-            val selStart = try { targetNode.textSelectionStart } catch (_: Throwable) { -1 }
-            val selEnd = try { targetNode.textSelectionEnd } catch (_: Throwable) { -1 }
-            val fullRawText = targetNode.text?.toString() ?: ""
-
-            val combinedText: String
-            val newCursorPos: Int
-
-            if (genuineExistingText.isBlank()) {
-                combinedText = newText
-                newCursorPos = newText.length
-            } else if (selStart in 0..fullRawText.length && selEnd in selStart..fullRawText.length) {
-                // Valid selection / cursor position: insert at cursor
-                val before = fullRawText.substring(0, selStart)
-                val after = fullRawText.substring(selEnd)
-                combinedText = before + newText + after
-                newCursorPos = selStart + newText.length
-            } else {
-                // Cursor position is invalid (-1) but genuine text exists: append to end with space
-                val spacer = if (genuineExistingText.endsWith(" ") || genuineExistingText.endsWith("\n")) "" else " "
-                combinedText = genuineExistingText + spacer + newText
-                newCursorPos = combinedText.length
-            }
-
-            if (combinedText.isNotBlank()) {
-                try {
-                    targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                    targetNode.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Notice requesting focus: ${e.message}")
-                }
-
-                val arguments = Bundle().apply {
-                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combinedText)
-                }
-                val injectionSucceeded = targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-                if (injectionSucceeded) {
-                    try {
-                        val selArgs = Bundle().apply {
-                            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, newCursorPos)
-                            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, newCursorPos)
-                        }
-                        targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Notice setting selection after injection: ${e.message}")
-                    }
-                    Log.d(TAG, "Direct field insertion succeeded via ACTION_SET_TEXT (zero clipboard touch, target=$targetPkg)")
-                    return true
-                } else {
-                    Log.w(TAG, "ACTION_SET_TEXT returned false on $targetPkg, falling back to performPasteInjection")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Direct field insertion error: ${e.message}, falling back to performPasteInjection")
-        }
-
-        // Secondary fallback if ACTION_SET_TEXT explicitly fails or is rejected by custom editor
-        Log.d(TAG, "Attempting secondary fallback paste injection for $targetPkg")
-        return performPasteInjection(targetNode, newText)
+        Log.d(TAG, "Executing direct typing (Magic Pen) for target app ($targetPkg), textLen=${newText.length}")
+        return injectTextSafely(targetNode, newText)
     }
 
-    /**
-     * Executes clipboard-based ACTION_PASTE injection:
-     * - Saves the user's current clipboard.
-     * - Sets clipboard to ONLY newly dictated text.
-     * - Dispatches ACTION_PASTE.
-     * - Verifies by polling node.refresh() and node.text after 300-400ms.
-     * - Retries the paste once if not yet verified.
-     * - Restores previous clipboard content ONLY AFTER verification confirms paste landed.
-     * - Updates selection to end of text to ensure Keep commits the document model.
-     */
     private fun performPasteInjection(targetNode: AccessibilityNodeInfo, newText: String): Boolean {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         val originalClip = try {
@@ -331,14 +281,7 @@ class VoxStreamAccessibilityService : AccessibilityService() {
 
         Log.d(TAG, "Executing paste-injection for pkg=${targetNode.packageName}, textLen=${newText.length}")
 
-        val dictationClip = ClipData.newPlainText("VoxStream Dictation", newText)
-        try {
-            clipboard?.setPrimaryClip(dictationClip)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed setting dictation clip", e)
-            return false
-        }
-
+        // Focus the node FIRST so the target app has input focus before touching clipboard
         try {
             targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             targetNode.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
@@ -346,52 +289,33 @@ class VoxStreamAccessibilityService : AccessibilityService() {
             Log.w(TAG, "Notice requesting focus before paste: ${e.message}")
         }
 
+        val dictationClip = ClipData.newPlainText("VoxStream Dictation", newText)
+        // Mark as sensitive on Android 13+ to prevent clipboard toasts
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                val extras = android.os.PersistableBundle().apply { putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true) }
+                dictationClip.description.extras = extras
+            } catch (e: Throwable) {}
+        }
+
+        try {
+            clipboard?.setPrimaryClip(dictationClip)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed setting dictation clip", e)
+            return false
+        }
+
         // Primary paste attempt
         val initialPasteResult = targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)
         Log.d(TAG, "Initial ACTION_PASTE dispatch: $initialPasteResult")
 
-        // Verification & clipboard restoration routine
-        var attempts = 0
-        val maxAttempts = 3
-        val verifyDelayMs = 350L
+        // Schedule self-clearing / restoration after 150ms:
+        // - If the user had previous/pinned text, it is restored back to the clipboard!
+        // - If the clipboard was empty beforehand, the temporary dictation deletes itself.
+        mainHandler.postDelayed({
+            safeRestoreOriginalClipboard(clipboard, originalClip, newText)
+        }, 150L)
 
-        val verifyRunnable = object : Runnable {
-            override fun run() {
-                attempts++
-                var isVerified = false
-                try {
-                    if (targetNode.refresh()) {
-                        val currentText = targetNode.text?.toString() ?: ""
-                        // Check if node text contains the new text or the snippet
-                        val checkSnippet = if (newText.length > 20) newText.take(20) else newText
-                        if (currentText.contains(checkSnippet)) {
-                            isVerified = true
-                            Log.d(TAG, "Paste verified on attempt $attempts! Node now contains dictated text (len=${currentText.length})")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error refreshing node during paste verification: ${e.message}")
-                }
-
-                if (isVerified) {
-                    // Paste landed successfully -> safely restore user's original clipboard
-                    safeRestoreOriginalClipboard(clipboard, originalClip, newText)
-                } else if (attempts < maxAttempts) {
-                    Log.w(TAG, "Paste not yet verified on attempt $attempts. Retrying ACTION_PASTE...")
-                    try {
-                        targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Retry paste error: ${e.message}")
-                    }
-                    mainHandler.postDelayed(this, verifyDelayMs)
-                } else {
-                    Log.w(TAG, "Paste verification exhausted after $maxAttempts attempts. Restoring clipboard.")
-                    safeRestoreOriginalClipboard(clipboard, originalClip, newText)
-                }
-            }
-        }
-
-        mainHandler.postDelayed(verifyRunnable, verifyDelayMs)
         return true
     }
 

@@ -106,6 +106,7 @@ class FloatingOverlayWindowManager(private val context: Context) {
             bubbleSize,
             windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -242,6 +243,9 @@ class FloatingOverlayWindowManager(private val context: Context) {
         lp.width = WindowManager.LayoutParams.MATCH_PARENT
         lp.height = WindowManager.LayoutParams.WRAP_CONTENT
         lp.gravity = Gravity.TOP or Gravity.START
+        lp.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         lp.x = 0
         lp.y = savedY.coerceIn(topY, maxY)
 
