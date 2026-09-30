@@ -229,29 +229,19 @@ class VoxStreamAccessibilityService : AccessibilityService() {
 
     /**
      * Injects transcribed text into the target active editable field:
-     * 1. For Google Keep (and model-driven apps that require committed IME input to prevent note discard):
-     *    - Saves the user's current clipboard.
-     *    - Writes the dictated text to the clipboard and executes ACTION_PASTE.
-     *    - Verifies success by checking node.refresh() and node.text after a delay, retrying if needed.
-     *    - Restores the original clipboard ONLY after verification succeeds.
-     *    - Hardens Keep's editor by updating selection to the end of the text.
-     * 2. For standard apps:
-     *    - Injects directly via ACTION_SET_TEXT at the cursor without touching the system clipboard.
-     *    - Falls back to the verified paste path only if ACTION_SET_TEXT is rejected.
+     * - If an active editable field is present, injects text directly at the caret/cursor
+     *   without touching the system clipboard at all.
+     * - Preserves the user's existing clipboard completely untouched upon successful field injection.
+     * - Returns true if field injection succeeded, or false if no field is available / injection failed
+     *   (which signals FloatingBubbleManager to execute the last-resort clipboard fallback).
      */
     fun injectText(newText: String): Boolean {
         if (newText.isEmpty()) return false
         val targetNode = getActiveEditableNode() ?: return false
         val targetPkg = targetNode.packageName?.toString() ?: ""
 
-        // Case 1: Target app requires committed IME input via ACTION_PASTE (e.g. Google Keep, Notion, Obsidian)
-        if (AppClassifier.isPasteRequired(targetPkg)) {
-            Log.d(TAG, "Target app is model-driven ($targetPkg) -> using verified paste injection path")
-            return performPasteInjection(targetNode, newText)
-        }
-
-        // Case 2: Standard apps -> Direct ACTION_SET_TEXT with zero clipboard interaction
-        return try {
+        // 1. Direct Field Insertion (Zero Clipboard Touch)
+        try {
             val genuineExistingText = extractGenuineText(targetNode)
             val selStart = try { targetNode.textSelectionStart } catch (_: Throwable) { -1 }
             val selEnd = try { targetNode.textSelectionEnd } catch (_: Throwable) { -1 }
@@ -274,45 +264,43 @@ class VoxStreamAccessibilityService : AccessibilityService() {
                 newCursorPos = combinedText.length
             }
 
-            if (combinedText.isBlank()) {
-                Log.w(TAG, "Skipping injection: combined text is blank")
-                return false
-            }
-
-            Log.d(TAG, "Direct node injection via ACTION_SET_TEXT (no clipboard): target=${targetNode.viewIdResourceName ?: targetNode.className}, len=${combinedText.length}")
-
-            try {
-                targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                targetNode.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
-            } catch (e: Exception) {
-                Log.w(TAG, "Notice requesting focus: ${e.message}")
-            }
-
-            val arguments = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combinedText)
-            }
-            val injectionSucceeded = targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-            Log.d(TAG, "ACTION_SET_TEXT result: $injectionSucceeded")
-
-            if (injectionSucceeded) {
+            if (combinedText.isNotBlank()) {
                 try {
-                    val selArgs = Bundle().apply {
-                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, newCursorPos)
-                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, newCursorPos)
-                    }
-                    targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs)
+                    targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                    targetNode.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Notice setting selection after injection: ${e.message}")
+                    Log.w(TAG, "Notice requesting focus: ${e.message}")
                 }
-                true
-            } else {
-                Log.w(TAG, "ACTION_SET_TEXT failed on node, falling back to verified paste injection")
-                performPasteInjection(targetNode, newText)
+
+                val arguments = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, combinedText)
+                }
+                val injectionSucceeded = targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                if (injectionSucceeded) {
+                    try {
+                        val selArgs = Bundle().apply {
+                            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, newCursorPos)
+                            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, newCursorPos)
+                        }
+                        targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Notice setting selection after injection: ${e.message}")
+                    }
+                    Log.d(TAG, "Direct field insertion succeeded via ACTION_SET_TEXT (zero clipboard touch, target=$targetPkg)")
+                    return true
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error in standard injection, falling back to verified paste", e)
-            performPasteInjection(targetNode, newText)
+            Log.w(TAG, "Direct field insertion error: ${e.message}")
         }
+
+        // 2. Secondary fallback for apps requiring committed IME paste (e.g. Keep, Notion)
+        if (AppClassifier.isPasteRequired(targetPkg)) {
+            Log.d(TAG, "Attempting secondary verified paste injection for $targetPkg")
+            return performPasteInjection(targetNode, newText)
+        }
+
+        return false
     }
 
     /**
@@ -372,18 +360,6 @@ class VoxStreamAccessibilityService : AccessibilityService() {
                         if (currentText.contains(checkSnippet)) {
                             isVerified = true
                             Log.d(TAG, "Paste verified on attempt $attempts! Node now contains dictated text (len=${currentText.length})")
-
-                            // Hardening for Keep: Update selection to end of text to force editor commit
-                            try {
-                                val endPos = currentText.length
-                                val selArgs = Bundle().apply {
-                                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, endPos)
-                                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, endPos)
-                                }
-                                targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Notice setting selection after verified paste: ${e.message}")
-                            }
                         }
                     }
                 } catch (e: Exception) {

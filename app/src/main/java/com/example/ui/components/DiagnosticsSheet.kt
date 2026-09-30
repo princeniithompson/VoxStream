@@ -899,6 +899,7 @@ private fun DiagnosticEntryRow(entry: DiagnosticLogEntry, timeFormat: SimpleDate
         DiagnosticType.ERROR -> Pair(Color(0xFFEF4444), "ERROR")
         DiagnosticType.WARNING -> Pair(Color(0xFFF59E0B), "WARN")
         DiagnosticType.NOISY_ENVIRONMENT -> Pair(Color(0xFFF97316), "NOISY")
+        DiagnosticType.SESSION_RECONNECT -> Pair(Color(0xFFEAB308), "RECONNECT")
     }
 
     Row(

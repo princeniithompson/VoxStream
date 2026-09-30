@@ -36,7 +36,8 @@ enum class DiagnosticType {
     POLISH_FAILED,
     ERROR,
     WARNING,
-    NOISY_ENVIRONMENT
+    NOISY_ENVIRONMENT,
+    SESSION_RECONNECT
 }
 
 data class DiagnosticLogEntry(
