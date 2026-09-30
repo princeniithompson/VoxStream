@@ -32,13 +32,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -54,6 +60,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -81,12 +88,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.data.ConnectionState
+import com.example.data.CustomVocabularyRepository
 import com.example.ui.components.AudioWaveformVisualizer
 import com.example.ui.components.DiagnosticsBottomSheet
 import com.example.ui.components.GlowAnimationCatalogue
 import com.example.ui.components.GlowStylesBottomSheet
 import com.example.ui.components.PulsatingRecordButton
+import com.example.ui.components.SmartVocabularyBottomSheet
+import com.example.ui.screens.DictionaryScreen
+import com.example.ui.screens.HomeScreen
 import kotlinx.coroutines.launch
+
+enum class MainScreenTab {
+    HOME,
+    DICTIONARY
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,10 +135,21 @@ fun VoiceTypingScreen(
     val selectedGlowStyleId by viewModel.selectedGlowStyleId.collectAsState()
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    var selectedTab by remember { mutableStateOf(MainScreenTab.HOME) }
     var showDiagnostics by remember { mutableStateOf(false) }
     val diagnosticsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showGlowStylesSheet by remember { mutableStateOf(false) }
     val glowStylesSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    val isAnalyzingSmartVocab by viewModel.isAnalyzingSmartVocab.collectAsState()
+    val smartVocabMessage by viewModel.smartVocabMessage.collectAsState()
+    val showSmartVocabSheet by viewModel.showSmartVocabSheet.collectAsState()
+    val smartVocabSuggestions by viewModel.smartVocabSuggestions.collectAsState()
+    val smartVocabSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    androidx.activity.compose.BackHandler(enabled = selectedTab != MainScreenTab.HOME) {
+        selectedTab = MainScreenTab.HOME
+    }
 
     // RECORD_AUDIO Permission Launcher
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -183,6 +210,85 @@ fun VoiceTypingScreen(
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                 Spacer(modifier = Modifier.height(8.dp))
 
+                // Custom Vocabulary / Dictionary Row
+                val vocabularyList by CustomVocabularyRepository.vocabulary.collectAsState()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable {
+                            scope.launch {
+                                drawerState.close()
+                                selectedTab = MainScreenTab.DICTIONARY
+                            }
+                        }
+                        .background(
+                            if (selectedTab == MainScreenTab.DICTIONARY)
+                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                            else
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondary),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Description,
+                            contentDescription = "Custom Vocabulary",
+                            tint = MaterialTheme.colorScheme.onSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Custom Vocabulary",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "${vocabularyList.size}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Add custom words, names & email addresses",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                        contentDescription = "Open dictionary",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
                 // Glow Animation Styles Picker Row (Opens 21 styles bottom sheet)
                 val activeGlowStyle = GlowAnimationCatalogue.getById(selectedGlowStyleId)
                 Row(
@@ -233,7 +339,7 @@ fun VoiceTypingScreen(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = "21",
+                                    text = "${GlowAnimationCatalogue.styles.size}",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
@@ -537,292 +643,45 @@ fun VoiceTypingScreen(
         modifier = modifier.fillMaxSize()
     ) {
         Scaffold(
-            topBar = {
-                CenterAlignedTopAppBar(
-                    navigationIcon = {
-                        IconButton(
-                            onClick = {
-                                scope.launch {
-                                    if (drawerState.isClosed) drawerState.open() else drawerState.close()
-                                }
-                            },
-                            modifier = Modifier.testTag("drawer_hamburger_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Menu,
-                                contentDescription = "Open settings drawer"
-                            )
-                        }
-                    },
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.primaryContainer),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.GraphicEq,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "VoxStream",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    },
-                actions = {
-                    // Protocol status pill
-                    ConnectionStatusChip(connectionState = connectionState)
-
-                    // Diagnostics / Log Button
-                    IconButton(
-                        onClick = { showDiagnostics = true },
-                        modifier = Modifier.testTag("open_diagnostics_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Terminal,
-                            contentDescription = "Protocol diagnostics",
-                            tint = if (stats.lastError != null) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.primary
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+            bottomBar = {
+                WisprFlowBottomNav(
+                    selectedTab = selectedTab,
+                    onTabSelected = { selectedTab = it },
+                    onOpenStyle = { showGlowStylesSheet = true },
+                    onOpenSnippets = { showDiagnostics = true }
                 )
-            )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        modifier = modifier.fillMaxSize()
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Live Stats Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 600.dp)
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val statusColor = when (connectionState) {
-                        is ConnectionState.Streaming -> Color(0xFF10B981)
-                        is ConnectionState.Connecting, is ConnectionState.ConnectedWaitingSetup -> Color(0xFFF59E0B)
-                        is ConnectionState.Error -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.outline
-                    }
-                    Box(
+            },
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            modifier = modifier.fillMaxSize()
+        ) { innerPadding ->
+            when (selectedTab) {
+                MainScreenTab.HOME -> {
+                    HomeScreen(
+                        viewModel = viewModel,
+                        onOpenMenu = {
+                            scope.launch {
+                                if (drawerState.isClosed) drawerState.open() else drawerState.close()
+                            }
+                        },
                         modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(statusColor)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (isRecording) {
-                            val mins = stats.durationSeconds / 60
-                            val secs = stats.durationSeconds % 60
-                            String.format("LIVE %02d:%02d", mins, secs)
-                        } else "STANDBY",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = statusColor
+                            .fillMaxSize()
+                            .padding(innerPadding)
                     )
                 }
-
-                Text(
-                    text = "$wordCount words • ${fullTranscript.length} chars",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Main Live Transcript Display Card
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .widthIn(max = 600.dp)
-                    .testTag("transcript_display_card")
-            ) {
-                val scrollState = rememberScrollState()
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
-                ) {
-                    if (fullTranscript.isEmpty() && !isRecording) {
-                        // Empty State Placeholder
-                        Column(
-                            modifier = Modifier.align(Alignment.Center),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(60.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Mic,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(32.dp)
-                                )
+                MainScreenTab.DICTIONARY -> {
+                    DictionaryScreen(
+                        onOpenMenu = {
+                            scope.launch {
+                                if (drawerState.isClosed) drawerState.open() else drawerState.close()
                             }
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "Tap the microphone to start dictating",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Real-time streaming speech-to-text via Gemini Live",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    } else {
-                        // Active / Committed Transcript
-                        val annotatedText = buildAnnotatedString {
-                            if (finalizedTranscript.isNotEmpty()) {
-                                withStyle(
-                                    SpanStyle(
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        fontWeight = FontWeight.Normal,
-                                        fontSize = 18.sp,
-                                        letterSpacing = 0.2.sp
-                                    )
-                                ) {
-                                    append(finalizedTranscript)
-                                }
-                            }
-                            if (interimTranscript.isNotEmpty()) {
-                                if (finalizedTranscript.isNotEmpty()) append(" ")
-                                withStyle(
-                                    SpanStyle(
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontStyle = FontStyle.Italic,
-                                        fontWeight = FontWeight.Medium,
-                                        fontSize = 18.sp
-                                    )
-                                ) {
-                                    append(interimTranscript)
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = annotatedText,
-                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .verticalScroll(scrollState)
-                                .testTag("transcript_text")
-                        )
-                    }
-
-                    // Floating action toolbar at bottom of transcript
-                    if (fullTranscript.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
-                                .padding(4.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    val copied = viewModel.copyTranscript(context)
-                                    if (copied) {
-                                        Toast.makeText(context, "Transcript copied", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier.size(36.dp).testTag("copy_transcript_button")
-                            ) {
-                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy transcript", modifier = Modifier.size(18.dp))
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    val sendIntent: Intent = Intent().apply {
-                                        action = Intent.ACTION_SEND
-                                        putExtra(Intent.EXTRA_TEXT, fullTranscript)
-                                        type = "text/plain"
-                                    }
-                                    val shareIntent = Intent.createChooser(sendIntent, "Share Transcript")
-                                    context.startActivity(shareIntent)
-                                },
-                                modifier = Modifier.size(36.dp).testTag("share_transcript_button")
-                            ) {
-                                Icon(Icons.Filled.Share, contentDescription = "Share transcript", modifier = Modifier.size(18.dp))
-                            }
-
-                            IconButton(
-                                onClick = { viewModel.clearTranscript() },
-                                modifier = Modifier.size(36.dp).testTag("clear_transcript_button")
-                            ) {
-                                Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear transcript", modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                    )
                 }
             }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Audio Waveform Visualizer
-            AudioWaveformVisualizer(
-                amplitude = amplitude,
-                isRecording = isRecording,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 600.dp)
-                    .padding(horizontal = 8.dp)
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Central Pulsating Record Button
-            PulsatingRecordButton(
-                isRecording = isRecording,
-                onClick = onToggleRecord,
-                modifier = Modifier.padding(vertical = 4.dp)
-            )
-
-            Text(
-                text = if (isRecording) "Listening... tap to stop" else "Tap to start voice typing",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
         }
-    }
     }
 
     // Diagnostics Sheet
@@ -846,18 +705,70 @@ fun VoiceTypingScreen(
             onClearAllDiagnostics = { viewModel.clearAllDiagnostics() },
             onDeleteRecording = { viewModel.deleteRecording(it) },
             onClearAllRecordings = { viewModel.clearAllRecordings() },
+            isAnalyzingSmartVocab = isAnalyzingSmartVocab,
+            onSimulateWeeklySmartVocab = { viewModel.simulateWeeklySmartVocabulary() },
             onDismiss = { showDiagnostics = false }
         )
     }
+
+    val selectedFinishingStyleId by viewModel.selectedFinishingStyleId.collectAsState()
 
     if (showGlowStylesSheet) {
         GlowStylesBottomSheet(
             sheetState = glowStylesSheetState,
             selectedStyleId = selectedGlowStyleId,
+            selectedFinishingStyleId = selectedFinishingStyleId,
             onSelectStyle = { styleId ->
                 viewModel.setGlowStyle(styleId)
             },
+            onSelectFinishingStyle = { styleId ->
+                viewModel.setFinishingStyle(styleId)
+            },
             onDismiss = { showGlowStylesSheet = false }
+        )
+    }
+
+    // Weekly Smart Vocabulary Bottom Sheet
+    if (showSmartVocabSheet) {
+        SmartVocabularyBottomSheet(
+            sheetState = smartVocabSheetState,
+            suggestions = smartVocabSuggestions,
+            onAccept = { viewModel.acceptSmartVocabSuggestion(it) },
+            onEdit = { suggestion, newTerm -> viewModel.editAndAcceptSmartVocabSuggestion(suggestion, newTerm) },
+            onDismissItem = { viewModel.dismissSmartVocabSuggestion(it) },
+            onAcceptAll = { viewModel.acceptAllSmartVocabSuggestions() },
+            onDismissSheet = { viewModel.dismissSmartVocabSheet() }
+        )
+    }
+
+    // Smart Vocabulary Informational Alert (Empty state or errors)
+    if (smartVocabMessage != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { viewModel.clearSmartVocabMessage() },
+            title = {
+                Text(
+                    text = "Weekly Smart Vocabulary",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Text(
+                    text = smartVocabMessage ?: "",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.clearSmartVocabMessage() },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("OK")
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(20.dp)
         )
     }
 }
@@ -886,6 +797,119 @@ private fun ConnectionStatusChip(connectionState: ConnectionState) {
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 0.5.sp
+        )
+    }
+}
+
+@Composable
+private fun WisprFlowBottomNav(
+    selectedTab: MainScreenTab,
+    onTabSelected: (MainScreenTab) -> Unit,
+    onOpenStyle: () -> Unit,
+    onOpenSnippets: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("wispr_bottom_nav")
+    ) {
+        Column {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                thickness = 0.8.dp
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp, horizontal = 12.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 1. Home Tab
+                val isHome = selectedTab == MainScreenTab.HOME
+                BottomNavItem(
+                    icon = Icons.Filled.Home,
+                    label = "Home",
+                    isSelected = isHome,
+                    onClick = { onTabSelected(MainScreenTab.HOME) },
+                    testTag = "nav_tab_home"
+                )
+
+                // 2. Dictionary Tab
+                val isDictionary = selectedTab == MainScreenTab.DICTIONARY
+                BottomNavItem(
+                    icon = Icons.Filled.Description,
+                    label = "Dictionary",
+                    isSelected = isDictionary,
+                    onClick = { onTabSelected(MainScreenTab.DICTIONARY) },
+                    testTag = "nav_tab_dictionary"
+                )
+
+                // 3. Style Tab
+                BottomNavItem(
+                    icon = Icons.Filled.FormatSize,
+                    label = "Style",
+                    isSelected = false,
+                    onClick = onOpenStyle,
+                    testTag = "nav_tab_style"
+                )
+
+                // 4. Snippets Tab
+                BottomNavItem(
+                    icon = Icons.Filled.ContentCut,
+                    label = "Snippets",
+                    isSelected = false,
+                    onClick = onOpenSnippets,
+                    testTag = "nav_tab_snippets"
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomNavItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 4.dp)
+            .testTag(testTag)
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    if (isSelected) MaterialTheme.colorScheme.secondaryContainer
+                    else Color.Transparent
+                )
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer
+                       else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+            color = if (isSelected) MaterialTheme.colorScheme.onSurface
+                   else MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

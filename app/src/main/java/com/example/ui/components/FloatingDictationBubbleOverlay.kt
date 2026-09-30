@@ -8,6 +8,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -41,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.R
+import com.example.service.FloatingBubbleManager
 
 /**
  * Dynamic Aurora Color Palette extracted directly from the user's Android 12+ wallpaper Monet palette.
@@ -90,48 +93,136 @@ data class AuroraColorPalette(
     val deep: Color
 )
 
-@Composable
-fun rememberDynamicAuroraPalette(): AuroraColorPalette {
-    val context = LocalContext.current
-    return remember(context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                val c200 = ContextCompat.getColor(context, android.R.color.system_accent1_200)
-                val c300 = ContextCompat.getColor(context, android.R.color.system_accent1_300)
-                val c400 = ContextCompat.getColor(context, android.R.color.system_accent1_400)
-                val c500 = ContextCompat.getColor(context, android.R.color.system_accent1_500)
-                val c600 = ContextCompat.getColor(context, android.R.color.system_accent1_600)
-                val c2_300 = ContextCompat.getColor(context, android.R.color.system_accent2_300)
-
-                AuroraColorPalette(
-                    primary = Color(c400),
-                    primaryLight = Color(c200),
-                    primaryVibrant = Color(c300),
-                    secondary = Color(c2_300),
-                    deep = Color(c600)
-                )
-            } catch (e: Throwable) {
-                try {
-                    val darkDyn = dynamicDarkColorScheme(context)
-                    AuroraColorPalette(
-                        primary = darkDyn.primary,
-                        primaryLight = darkDyn.primaryContainer,
-                        primaryVibrant = darkDyn.primary,
-                        secondary = darkDyn.secondary,
-                        deep = darkDyn.surfaceTint
+/**
+ * Pure function to extract the dynamic color palette based on chosen tone.
+ * Tones:
+ * - "luminous": Bright, luminous dynamic wallpaper colors (default)
+ * - "deep": Rich, saturated dark tones matching keyboard keys
+ * - "muted": Soft, subtle secondary pastel dynamic colors
+ * - "tertiary": Rich alternative tertiary dynamic accents
+ */
+fun getDynamicTonePalette(context: Context, toneId: String): AuroraColorPalette {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        try {
+            when (toneId) {
+                "deep" -> {
+                    // Deep Keyboard Tone: rich darker dynamic hues matching Gboard key backgrounds
+                    val c500 = ContextCompat.getColor(context, android.R.color.system_accent1_500)
+                    val c600 = ContextCompat.getColor(context, android.R.color.system_accent1_600)
+                    val c700 = ContextCompat.getColor(context, android.R.color.system_accent1_700)
+                    val c800 = ContextCompat.getColor(context, android.R.color.system_accent1_800)
+                    val c2_600 = ContextCompat.getColor(context, android.R.color.system_accent2_600)
+                    return AuroraColorPalette(
+                        primary = Color(c700),
+                        primaryLight = Color(c500),
+                        primaryVibrant = Color(c600),
+                        secondary = Color(c2_600),
+                        deep = Color(c800)
                     )
-                } catch (e2: Throwable) {
-                    AuroraColorPalette(
-                        primary = Color(0xFF10B981),
-                        primaryLight = Color(0xFF6EE7B7),
-                        primaryVibrant = Color(0xFF34D399),
-                        secondary = Color(0xFF06B6D4),
-                        deep = Color(0xFF064E3B)
+                }
+                "muted" -> {
+                    // Muted Tone: uses system_accent2 (secondary dynamic hue)
+                    val a2_200 = ContextCompat.getColor(context, android.R.color.system_accent2_200)
+                    val a2_300 = ContextCompat.getColor(context, android.R.color.system_accent2_300)
+                    val a2_400 = ContextCompat.getColor(context, android.R.color.system_accent2_400)
+                    val a2_600 = ContextCompat.getColor(context, android.R.color.system_accent2_600)
+                    val a1_300 = ContextCompat.getColor(context, android.R.color.system_accent1_300)
+                    return AuroraColorPalette(
+                        primary = Color(a2_400),
+                        primaryLight = Color(a2_200),
+                        primaryVibrant = Color(a2_300),
+                        secondary = Color(a1_300),
+                        deep = Color(a2_600)
+                    )
+                }
+                "tertiary" -> {
+                    // Tertiary Accent Tone: uses system_accent3 (tertiary dynamic hue)
+                    val a3_200 = ContextCompat.getColor(context, android.R.color.system_accent3_200)
+                    val a3_300 = ContextCompat.getColor(context, android.R.color.system_accent3_300)
+                    val a3_400 = ContextCompat.getColor(context, android.R.color.system_accent3_400)
+                    val a3_600 = ContextCompat.getColor(context, android.R.color.system_accent3_600)
+                    val a1_300 = ContextCompat.getColor(context, android.R.color.system_accent1_300)
+                    return AuroraColorPalette(
+                        primary = Color(a3_400),
+                        primaryLight = Color(a3_200),
+                        primaryVibrant = Color(a3_300),
+                        secondary = Color(a1_300),
+                        deep = Color(a3_600)
+                    )
+                }
+                else -> {
+                    // Luminous Tone (Default): light & bright shades (200, 300, 400)
+                    val c200 = ContextCompat.getColor(context, android.R.color.system_accent1_200)
+                    val c300 = ContextCompat.getColor(context, android.R.color.system_accent1_300)
+                    val c400 = ContextCompat.getColor(context, android.R.color.system_accent1_400)
+                    val c600 = ContextCompat.getColor(context, android.R.color.system_accent1_600)
+                    val c2_300 = ContextCompat.getColor(context, android.R.color.system_accent2_300)
+                    return AuroraColorPalette(
+                        primary = Color(c400),
+                        primaryLight = Color(c200),
+                        primaryVibrant = Color(c300),
+                        secondary = Color(c2_300),
+                        deep = Color(c600)
                     )
                 }
             }
-        } else {
-            AuroraColorPalette(
+        } catch (e: Throwable) {
+            val darkDyn = dynamicDarkColorScheme(context)
+            return when (toneId) {
+                "deep" -> AuroraColorPalette(
+                    primary = darkDyn.primaryContainer,
+                    primaryLight = darkDyn.primary,
+                    primaryVibrant = darkDyn.primaryContainer,
+                    secondary = darkDyn.secondaryContainer,
+                    deep = darkDyn.surfaceTint
+                )
+                "muted" -> AuroraColorPalette(
+                    primary = darkDyn.secondary,
+                    primaryLight = darkDyn.secondaryContainer,
+                    primaryVibrant = darkDyn.secondary,
+                    secondary = darkDyn.primary,
+                    deep = darkDyn.surfaceTint
+                )
+                "tertiary" -> AuroraColorPalette(
+                    primary = darkDyn.tertiary,
+                    primaryLight = darkDyn.tertiaryContainer,
+                    primaryVibrant = darkDyn.tertiary,
+                    secondary = darkDyn.secondary,
+                    deep = darkDyn.surfaceTint
+                )
+                else -> AuroraColorPalette(
+                    primary = darkDyn.primary,
+                    primaryLight = darkDyn.primaryContainer,
+                    primaryVibrant = darkDyn.primary,
+                    secondary = darkDyn.secondary,
+                    deep = darkDyn.surfaceTint
+                )
+            }
+        }
+    } else {
+        return when (toneId) {
+            "deep" -> AuroraColorPalette(
+                primary = Color(0xFF065F46),
+                primaryLight = Color(0xFF047857),
+                primaryVibrant = Color(0xFF059669),
+                secondary = Color(0xFF0891B2),
+                deep = Color(0xFF022C22)
+            )
+            "muted" -> AuroraColorPalette(
+                primary = Color(0xFF0D9488),
+                primaryLight = Color(0xFF5EEAD4),
+                primaryVibrant = Color(0xFF2DD4BF),
+                secondary = Color(0xFF38BDF8),
+                deep = Color(0xFF134E4A)
+            )
+            "tertiary" -> AuroraColorPalette(
+                primary = Color(0xFF8B5CF6),
+                primaryLight = Color(0xFFC4B5FD),
+                primaryVibrant = Color(0xFFA78BFA),
+                secondary = Color(0xFFEC4899),
+                deep = Color(0xFF4C1D95)
+            )
+            else -> AuroraColorPalette(
                 primary = Color(0xFF10B981),
                 primaryLight = Color(0xFF6EE7B7),
                 primaryVibrant = Color(0xFF34D399),
@@ -139,6 +230,16 @@ fun rememberDynamicAuroraPalette(): AuroraColorPalette {
                 deep = Color(0xFF064E3B)
             )
         }
+    }
+}
+
+@Composable
+fun rememberDynamicAuroraPalette(toneIdOverride: String? = null): AuroraColorPalette {
+    val context = LocalContext.current
+    val globalTone by FloatingBubbleManager.selectedColorTone.collectAsState()
+    val activeTone = toneIdOverride ?: globalTone
+    return remember(context, activeTone) {
+        getDynamicTonePalette(context, activeTone)
     }
 }
 
@@ -285,6 +386,31 @@ fun createNotchedPath(
     return path
 }
 
+class NotchedContainerShape(
+    private val cornerRadius: Dp,
+    private val notchRadius: Dp,
+    private val notchCenterOffsetX: Dp,
+    private val notchCenterOffsetY: Dp,
+    private val filletRadius: Dp
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val path = createNotchedPath(
+            size = size,
+            density = density,
+            cornerRadius = cornerRadius,
+            notchRadius = notchRadius,
+            notchCenterOffsetX = notchCenterOffsetX,
+            notchCenterOffsetY = notchCenterOffsetY,
+            filletRadius = filletRadius
+        )
+        return Outline.Generic(path)
+    }
+}
+
 /**
  * Floating Dictation Popup matching the exact reference UI design:
  * - Highly transparent dark frosted glass container (underlying screen content visibly readable)
@@ -302,6 +428,7 @@ fun FloatingDictationPopup(
     isPolishing: Boolean,
     audioAmplitude: Float = 0f,
     glowStyleId: String = GlowAnimationCatalogue.DEFAULT_ID,
+    finishingStyleId: String = FinishingAnimationCatalogue.DEFAULT_ID,
     onCancelClick: () -> Unit,
     onPolishClick: () -> Unit,
     onCompleteClick: () -> Unit,
@@ -384,6 +511,55 @@ fun FloatingDictationPopup(
     // Local completing state for instantaneous UI feedback on tap
     var isCompletingLocally by remember { mutableStateOf(false) }
     val isFinalizing = isPendingFinalizing || isCompletingLocally
+    val isFinishingActive = isFinalizing || isPolishing
+
+    // Exit progression for Sunset Mirage reverse logic (takes 1400ms):
+    // 0..0.42: contracts inward to Cancel "N" and Complete "P"
+    // 0.42..1.0: settled wave block glides smoothly to the right and fades out
+    val exitAnim = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(isFinishingActive) {
+        if (isFinishingActive) {
+            exitAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = androidx.compose.animation.core.tween(
+                    durationMillis = 1400,
+                    easing = androidx.compose.animation.core.LinearEasing
+                )
+            )
+        } else {
+            exitAnim.snapTo(0f)
+        }
+    }
+    val morphProgress = exitAnim.value
+
+    // Slow-network waiting loop:
+    // If complete is clicked and the initial exit has finished (1400ms) but loading/injection
+    // is still ongoing, repeatedly and gently sweep across from left to right (~1800ms per pass).
+    val waitingLoopAnim by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "waitingLoopAnim"
+    )
+    val waitingLoopProgress = if (isFinishingActive && morphProgress >= 0.999f) waitingLoopAnim else 0f
+
+    // Entrance sequence for Sunset Mirage:
+    // 1. Container appears -> wait 350ms (1/3 second) -> softly expand from center outward to full width in 280ms
+    val sunsetEntranceAnim = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(350L)
+        sunsetEntranceAnim.animateTo(
+            targetValue = 1f,
+            animationSpec = androidx.compose.animation.core.tween(
+                durationMillis = 280,
+                easing = FastOutSlowInEasing
+            )
+        )
+    }
+    val sunsetEntranceProgress = sunsetEntranceAnim.value
 
     LaunchedEffect(isRecording) {
         if (isRecording) {
@@ -423,11 +599,22 @@ fun FloatingDictationPopup(
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 4.dp)
     ) {
+        val notchedShape = remember(cornerRadius, notchRadius, notchCenterOffsetX, notchCenterOffsetY, filletRadius) {
+            NotchedContainerShape(
+                cornerRadius = cornerRadius,
+                notchRadius = notchRadius,
+                notchCenterOffsetX = notchCenterOffsetX,
+                notchCenterOffsetY = notchCenterOffsetY,
+                filletRadius = filletRadius
+            )
+        }
+
         // 1. Container Card with Notched Shape, Aurora Internal Bloom & Translucent Glass Fill
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 22.dp) // Leave headroom for the docked lifebuoy ring
+                .clip(notchedShape)
                 .drawBehind {
                     val path = createNotchedPath(
                         size = size,
@@ -442,64 +629,68 @@ fun FloatingDictationPopup(
                     val cx = size.width - notchCenterOffsetX.toPx()
                     val cy = notchCenterOffsetY.toPx()
 
-                    // Aurora Bloom Layer 1: Ambient light diffusing across the entire interior and softly past edges
-                    drawPath(
-                        path = path,
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                palette.primaryVibrant.copy(alpha = 0.38f * glowPulse),
-                                palette.secondary.copy(alpha = 0.18f * glowPulse),
-                                Color.Transparent
-                            ),
-                            center = Offset(size.width * 0.38f, size.height * 0.45f),
-                            radius = size.width * 0.75f
-                        )
-                    )
-
-                    // Aurora Bloom Layer 2: Focused light bloom softly wrapping the inside of the cutout notch
-                    drawRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                palette.primaryLight.copy(alpha = 0.35f * glowPulse),
-                                palette.primary.copy(alpha = 0.12f * glowPulse),
-                                Color.Transparent
-                            ),
-                            center = Offset(cx, cy + 12.dp.toPx()),
-                            radius = 48.dp.toPx()
-                        )
-                    )
-
-                    // Frosted Glass Background Fill: Highly transparent dark glass with subtle dynamic tint
-                    drawPath(
-                        path = path,
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0x800A1513), // ~50% opacity translucent dark glass
-                                Color(0x94060F0E)  // ~58% opacity bottom glass
+                    // All background layers strictly clipped inside the container notched path
+                    clipPath(path) {
+                        // Aurora Bloom Layer 1: Ambient light diffusing across the interior
+                        drawRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    palette.primaryVibrant.copy(alpha = 0.38f * glowPulse),
+                                    palette.secondary.copy(alpha = 0.18f * glowPulse),
+                                    Color.Transparent
+                                ),
+                                center = Offset(size.width * 0.38f, size.height * 0.45f),
+                                radius = size.width * 0.75f
                             )
                         )
-                    )
 
-                    // Dynamic Glowing Container Animation (Configurable across 21 ambient & wave animation styles)
-                    clipPath(path) {
-                        // Audio amplitude combines with organic breathing idle glow
-                        val effectiveAmp = if (isRecording) {
+                        // Aurora Bloom Layer 2: Focused light bloom softly wrapping the inside of the cutout notch
+                        drawRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    palette.primaryLight.copy(alpha = 0.35f * glowPulse),
+                                    palette.primary.copy(alpha = 0.12f * glowPulse),
+                                    Color.Transparent
+                                ),
+                                center = Offset(cx, cy + 12.dp.toPx()),
+                                radius = 48.dp.toPx()
+                            )
+                        )
+
+                        // Frosted Glass Background Fill: Highly transparent dark glass
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(
+                                    Color(0x800A1513), // ~50% opacity translucent dark glass
+                                    Color(0x94060F0E)  // ~58% opacity bottom glass
+                                )
+                            )
+                        )
+
+                        // Dynamic Glowing Container Animation (Configurable across 21 ambient & wave animation styles)
+                        val baseAmp = if (isRecording) {
                             maxOf(animatedAmplitude, idleBreathing)
                         } else {
                             0.06f
                         }
 
-                        // High dynamic contrast: idle glow is gentle and visible (~0.40f); voice surges to full brilliance (1.0f)
-                        val glowBrightness = (0.38f + 0.62f * effectiveAmp).coerceIn(0.20f, 1.0f)
+                        // All 21 styles use the universal continuous lifecycle (entrance -> live speech -> contract & glide exit -> wait loop)
+                        val effectiveAmp = baseAmp
+                        val glowBrightness = (0.38f + 0.62f * effectiveAmp)
 
-                        renderGlowAnimation(
-                            styleId = glowStyleId,
-                            palette = palette,
-                            effectiveAmp = effectiveAmp,
-                            glowBrightness = glowBrightness,
-                            phase1 = phase1,
-                            phase2 = phase2
-                        )
+                        if (glowBrightness > 0.005f) {
+                            renderGlowAnimation(
+                                styleId = glowStyleId,
+                                palette = palette,
+                                effectiveAmp = effectiveAmp,
+                                glowBrightness = glowBrightness,
+                                phase1 = phase1,
+                                phase2 = phase2,
+                                completionMorphProgress = morphProgress,
+                                entranceProgress = sunsetEntranceProgress,
+                                waitingLoopProgress = waitingLoopProgress
+                            )
+                        }
                     }
 
                     // Aurora Edge Catch: Soft ambient luminous border following the notch and container perimeter
@@ -646,12 +837,6 @@ fun FloatingDictationPopup(
                             horizontalArrangement = Arrangement.Center
                         ) {
                             if (isPolishing) {
-                                CircularProgressIndicator(
-                                    color = palette.primaryVibrant,
-                                    strokeWidth = 2.dp,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
                                 Text(
                                     text = "Polishing...",
                                     color = Color(0xFFE2E8F0),
@@ -676,7 +861,7 @@ fun FloatingDictationPopup(
                         }
                     }
 
-                    // 3. Complete Button: Solid Dynamic Accent Pill with Checkmark / Loading Spinner
+                    // 3. Complete Button: Solid Dynamic Accent Pill with Checkmark
                     val onAccentColor = if (isColorDark(palette.primaryVibrant)) Color.White else Color(0xFF042F2E)
 
                     PillActionButton(
@@ -696,12 +881,6 @@ fun FloatingDictationPopup(
                             horizontalArrangement = Arrangement.Center
                         ) {
                             if (isFinalizing) {
-                                CircularProgressIndicator(
-                                    color = onAccentColor,
-                                    strokeWidth = 2.2.dp,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "Completing...",
                                     color = onAccentColor,
@@ -724,6 +903,35 @@ fun FloatingDictationPopup(
                                 )
                             }
                         }
+                    }
+                }
+
+                // Tiny Context Status Text: Centered directly beneath the buttons (e.g. "AI · Grok")
+                val sessionContext by FloatingBubbleManager.lockedSessionContext.collectAsState()
+                val currentPkg by FloatingBubbleManager.currentForegroundPackage.collectAsState()
+                val context = LocalContext.current
+                val displayContext = sessionContext ?: remember(currentPkg) {
+                    com.example.service.AppContextResolver.resolve(context, currentPkg)?.formatted
+                }
+
+                if (!displayContext.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(5.dp))
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = displayContext,
+                            style = TextStyle(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                fontSize = 10.5.sp,
+                                fontFamily = FontFamily.SansSerif,
+                                fontWeight = FontWeight.Normal,
+                                letterSpacing = 0.2.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }

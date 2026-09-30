@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,7 +27,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Card
@@ -38,9 +38,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,12 +57,18 @@ import androidx.compose.ui.unit.sp
 import com.example.service.FloatingBubbleManager
 import kotlin.math.PI
 
+/**
+ * Bottom Sheet for selecting among the 21 Recording Glow styles.
+ * Finishing Waves catalogue has been retired in favor of continuous morphing.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlowStylesBottomSheet(
     sheetState: SheetState,
     selectedStyleId: String,
+    selectedFinishingStyleId: String = "",
     onSelectStyle: (String) -> Unit,
+    onSelectFinishingStyle: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -116,7 +125,7 @@ fun GlowStylesBottomSheet(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "Glow Animation Styles",
+                            text = "Recording Glows",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -128,7 +137,7 @@ fun GlowStylesBottomSheet(
                                 .padding(horizontal = 8.dp, vertical = 3.dp)
                         ) {
                             Text(
-                                text = "21 Styles",
+                                text = "${GlowAnimationCatalogue.styles.size} Styles",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = palette.primaryVibrant
@@ -137,7 +146,7 @@ fun GlowStylesBottomSheet(
                     }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Choose your favorite container glow for the floating dictation bubble.",
+                        text = "Choose your favorite ambient glow style for live dictation.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -151,8 +160,107 @@ fun GlowStylesBottomSheet(
                 }
             }
 
-            // Top Hero Preview Card (Balanced layout without any text overlapping)
+            // Dynamic Color Tone Selector (Premium side-by-side pills without emojis)
+            val selectedTone by FloatingBubbleManager.selectedColorTone.collectAsState()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Dynamic Color Tone",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = when (selectedTone) {
+                            "deep" -> "Deep Keyboard"
+                            "muted" -> "Muted"
+                            "tertiary" -> "Accent"
+                            else -> "Luminous"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.primaryVibrant
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val tones = listOf(
+                        "luminous" to "Luminous",
+                        "deep" to "Deep",
+                        "muted" to "Muted",
+                        "tertiary" to "Accent"
+                    )
+                    tones.forEach { (toneId, toneLabel) ->
+                        val isSelected = selectedTone == toneId
+                        val tonePreview = remember(context, toneId) {
+                            getDynamicTonePalette(context, toneId)
+                        }
+
+                        Surface(
+                            onClick = {
+                                FloatingBubbleManager.setColorTone(context, toneId)
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (isSelected) {
+                                tonePreview.primaryVibrant.copy(alpha = 0.22f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f)
+                            },
+                            border = BorderStroke(
+                                width = if (isSelected) 1.5.dp else 1.dp,
+                                color = if (isSelected) tonePreview.primaryVibrant else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(tonePreview.primaryVibrant)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = toneLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.onSurface
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Top Hero Preview Card
             val currentStyle = GlowAnimationCatalogue.getById(selectedStyleId)
+
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -198,7 +306,7 @@ fun GlowStylesBottomSheet(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "LIVE PREVIEW • ACTIVE STYLE",
+                                    text = "LIVE PREVIEW • RECORDING GLOW",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = palette.primaryLight,
@@ -247,7 +355,7 @@ fun GlowStylesBottomSheet(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
             )
 
-            // Scrollable List of All 21 Styles — Wide horizontal cards with equal height ⚖️
+            // Scrollable List of 21 Recording Glow Styles
             LazyColumn(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -258,7 +366,7 @@ fun GlowStylesBottomSheet(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(84.dp) // Uniform balanced height across all 21 containers
+                            .height(84.dp)
                             .padding(horizontal = 16.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .clickable {
@@ -285,7 +393,6 @@ fun GlowStylesBottomSheet(
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // 1. Left: Miniature Live Canvas Preview Thumbnail
                             Box(
                                 modifier = Modifier
                                     .size(width = 68.dp, height = 54.dp)
@@ -303,14 +410,12 @@ fun GlowStylesBottomSheet(
                                     }
                             )
 
-                            // 2. Center: Title, Tag, and Subtitle (Strict horizontal layout, zero vertical wrapping)
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
                                     .padding(start = 12.dp, end = 8.dp),
                                 verticalArrangement = Arrangement.Center
                             ) {
-                                // Title and Category Tag Row
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically
@@ -348,7 +453,6 @@ fun GlowStylesBottomSheet(
 
                                 Spacer(modifier = Modifier.height(3.dp))
 
-                                // Description subtitle
                                 Text(
                                     text = style.subtitle,
                                     style = MaterialTheme.typography.bodySmall,
@@ -359,7 +463,6 @@ fun GlowStylesBottomSheet(
                                 )
                             }
 
-                            // 3. Right: Circular Selection / Radio Indicator
                             Box(
                                 modifier = Modifier
                                     .size(24.dp)

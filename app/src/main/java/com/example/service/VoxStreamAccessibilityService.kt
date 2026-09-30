@@ -72,6 +72,15 @@ class VoxStreamAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
+        val detectedPkg = getActivePackageName() ?: run {
+            val eventPkg = event.packageName?.toString()
+            if (!AppContextResolver.isIgnoredPackage(this, eventPkg)) eventPkg else null
+        }
+
+        if (detectedPkg != null) {
+            FloatingBubbleManager.updateCurrentForegroundPackage(detectedPkg)
+        }
+
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
@@ -253,8 +262,8 @@ class VoxStreamAccessibilityService : AccessibilityService() {
         // Case 2: Standard apps -> Direct ACTION_SET_TEXT with zero clipboard interaction
         return try {
             val genuineExistingText = extractGenuineText(targetNode)
-            val selStart = targetNode.textSelectionStart
-            val selEnd = targetNode.textSelectionEnd
+            val selStart = try { targetNode.textSelectionStart } catch (_: Throwable) { -1 }
+            val selEnd = try { targetNode.textSelectionEnd } catch (_: Throwable) { -1 }
             val fullRawText = targetNode.text?.toString() ?: ""
 
             val combinedText: String
@@ -536,6 +545,62 @@ class VoxStreamAccessibilityService : AccessibilityService() {
             val result = findBestEditableInTree(child)
             if (result != null) return result
         }
+        return null
+    }
+
+    fun getActiveApplicationWindow(): AccessibilityWindowInfo? {
+        val currentWindows = try { windows } catch (e: Throwable) { null }
+        if (!currentWindows.isNullOrEmpty()) {
+            for (window in currentWindows) {
+                if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION && (window.isFocused || window.isActive)) {
+                    return window
+                }
+            }
+            for (window in currentWindows) {
+                if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                    return window
+                }
+            }
+        }
+        return null
+    }
+
+    fun getActivePackageName(): String? {
+        // 1. Inspect windows for real TYPE_APPLICATION window
+        val currentWindows = try { windows } catch (e: Throwable) { null }
+        if (!currentWindows.isNullOrEmpty()) {
+            // Check focused or active application window first
+            for (window in currentWindows) {
+                if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION && (window.isFocused || window.isActive)) {
+                    val pkg = window.root?.packageName?.toString()
+                    if (!AppContextResolver.isIgnoredPackage(this, pkg)) {
+                        return pkg
+                    }
+                }
+            }
+            // Check any application window in z-order
+            for (window in currentWindows) {
+                if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                    val pkg = window.root?.packageName?.toString()
+                    if (!AppContextResolver.isIgnoredPackage(this, pkg)) {
+                        return pkg
+                    }
+                }
+            }
+        }
+
+        // 2. Check last focused editable node if it belongs to a valid target app
+        val lastNodePkg = lastFocusedEditableNode?.packageName?.toString()
+        if (!AppContextResolver.isIgnoredPackage(this, lastNodePkg)) {
+            return lastNodePkg
+        }
+
+        // 3. Check root in active window
+        val rootPkg = rootInActiveWindow?.packageName?.toString()
+        if (!AppContextResolver.isIgnoredPackage(this, rootPkg)) {
+            return rootPkg
+        }
+
         return null
     }
 }

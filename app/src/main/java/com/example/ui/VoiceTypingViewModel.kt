@@ -39,8 +39,17 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    val isAecSupported: Boolean = android.media.audiofx.AcousticEchoCanceler.isAvailable()
-    val isNoiseSuppressorSupported: Boolean = android.media.audiofx.NoiseSuppressor.isAvailable()
+    val isAecSupported: Boolean = try {
+        android.media.audiofx.AcousticEchoCanceler.isAvailable()
+    } catch (t: Throwable) {
+        false
+    }
+
+    val isNoiseSuppressorSupported: Boolean = try {
+        android.media.audiofx.NoiseSuppressor.isAvailable()
+    } catch (t: Throwable) {
+        false
+    }
 
     private val _isAecEnabled = MutableStateFlow(prefs.getBoolean(KEY_AEC_ENABLED, true))
     val isAecEnabled: StateFlow<Boolean> = _isAecEnabled.asStateFlow()
@@ -81,9 +90,14 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
     val isBubbleEnabled: StateFlow<Boolean> = com.example.service.FloatingBubbleManager.isBubbleEnabled
     val isAccessibilityConnected: StateFlow<Boolean> = com.example.service.FloatingBubbleManager.isAccessibilityConnected
     val selectedGlowStyleId: StateFlow<String> = com.example.service.FloatingBubbleManager.selectedGlowStyleId
+    val selectedFinishingStyleId: StateFlow<String> = com.example.service.FloatingBubbleManager.selectedFinishingStyleId
 
     fun setGlowStyle(styleId: String) {
         com.example.service.FloatingBubbleManager.setGlowStyle(getApplication(), styleId)
+    }
+
+    fun setFinishingStyle(styleId: String) {
+        com.example.service.FloatingBubbleManager.setFinishingStyle(getApplication(), styleId)
     }
 
     init {
@@ -93,6 +107,7 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         }
         com.example.data.AppLogRepository.init(application)
         com.example.service.FloatingBubbleManager.init(application)
+        checkWeeklySmartVocabularySchedule()
     }
 
     val diagnosticEntries: StateFlow<List<com.example.data.DiagnosticLogEntry>> = com.example.data.AppLogRepository.diagnosticEntries
@@ -176,14 +191,22 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
             addLog(level, tag, msg, payload)
         },
         onError = { errorMsg ->
+            val isPingTimeout = errorMsg.contains("ping", ignoreCase = true) || errorMsg.contains("pong", ignoreCase = true) || errorMsg.contains("timeout", ignoreCase = true)
+            val endedReasonTag = if (isPingTimeout) "ping_timeout" else "connection_drop"
+
             _stats.update { it.copy(lastError = errorMsg) }
             com.example.data.AppLogRepository.logEvent(
                 com.example.data.DiagnosticSource.APP,
                 com.example.data.DiagnosticType.ERROR,
                 errorMsg
             )
+            if (_isRecording.value) {
+                stopRecording(endedReason = endedReasonTag)
+            }
         }
     )
+
+    private var appWakeLock: android.os.PowerManager.WakeLock? = null
 
     private val audioRecorder = AudioRecorder(
         onChunkReady = { chunk ->
@@ -272,6 +295,21 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         audioQueue.clear()
         _stats.value = LiveStats(setupCompleted = false)
 
+        try {
+            val powerManager = getApplication<Application>().getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (appWakeLock?.isHeld == true) {
+                try { appWakeLock?.release() } catch (_: Exception) {}
+            }
+            appWakeLock = powerManager.newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                "voxstream:in_app_voice_typing_wakelock"
+            ).apply {
+                acquire(30 * 60 * 1000L /* 30 minutes max */)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire WakeLock for in-app session", e)
+        }
+
         val apiKey = effectiveApiKey
         val modeLabel = if (_isSmartMode.value) "SMART" else "VERBATIM"
         addLog(LogLevel.INFO, TAG, "Starting voice typing session ($modeLabel mode). Key configured: ${isApiKeyConfigured()}")
@@ -290,7 +328,8 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         )
 
         // 2. Open Gemini Live WebSocket connection
-        webSocketClient.connect(apiKey, _selectedModel.value, _isSmartMode.value)
+        val customVocab = com.example.data.CustomVocabularyRepository.getVocabulary()
+        webSocketClient.connect(apiKey, _selectedModel.value, _isSmartMode.value, customVocabulary = customVocab)
 
         // 3. Start recording duration timer
         durationJob?.cancel()
@@ -304,16 +343,35 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun stopRecording() {
+    fun cancelSession() {
+        val wasRecording = _isRecording.value
+        val hasTranscript = _finalizedTranscript.value.isNotBlank() || _interimTranscript.value.isNotBlank()
+
+        if (wasRecording) {
+            stopRecording(endedReason = "user_cancelled")
+        } else if (hasTranscript) {
+            com.example.data.AppLogRepository.logEvent(
+                com.example.data.DiagnosticSource.APP,
+                com.example.data.DiagnosticType.SESSION_END,
+                "ended_reason: user_cancelled"
+            )
+        }
+        clearTranscript()
+    }
+
+    fun stopRecording(endedReason: String = "completed") {
         if (!_isRecording.value) return
         _isRecording.value = false
         durationJob?.cancel()
 
-        addLog(LogLevel.INFO, TAG, "Stopping recording session...")
+        addLog(LogLevel.INFO, TAG, "Stopping recording session ($endedReason)...")
 
         // 1. Stop mic capture
         audioRecorder.stop()
         _audioAmplitude.value = 0f
+
+        val wl = appWakeLock
+        appWakeLock = null
 
         // 2. Signal stream completion & close WS
         viewModelScope.launch(Dispatchers.IO) {
@@ -332,12 +390,19 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
                 Log.e(TAG, "Error stopping in-app session", e)
             } finally {
                 _connectionState.value = ConnectionState.Idle
-                addLog(LogLevel.INFO, TAG, "Session completed. Total chunks sent: $chunksAtEnd")
+                addLog(LogLevel.INFO, TAG, "Session completed ($endedReason). Total chunks sent: $chunksAtEnd")
                 com.example.data.AppLogRepository.logEvent(
                     com.example.data.DiagnosticSource.APP,
                     com.example.data.DiagnosticType.SESSION_END,
-                    "Duration: ${durationAtEnd}s, Chunks: $chunksAtEnd, Streamed: ${bytesAtEnd / 1024} KB"
+                    "ended_reason: $endedReason | Duration: ${durationAtEnd}s, Chunks: $chunksAtEnd, Streamed: ${bytesAtEnd / 1024} KB"
                 )
+                try {
+                    if (wl?.isHeld == true) {
+                        wl.release()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error releasing WakeLock in ViewModel", e)
+                }
             }
         }
     }
@@ -401,6 +466,121 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
 
     fun clearLogs() {
         com.example.data.AppLogRepository.clearLiveFrames()
+    }
+
+    // Weekly Smart Vocabulary
+    private val KEY_LAST_WEEKLY_CHECK_TIME = "last_weekly_smart_vocab_check_time"
+    private val _smartVocabSuggestions = MutableStateFlow<List<com.example.service.SmartVocabularySuggestion>>(emptyList())
+    val smartVocabSuggestions: StateFlow<List<com.example.service.SmartVocabularySuggestion>> = _smartVocabSuggestions.asStateFlow()
+
+    private val _isAnalyzingSmartVocab = MutableStateFlow(false)
+    val isAnalyzingSmartVocab: StateFlow<Boolean> = _isAnalyzingSmartVocab.asStateFlow()
+
+    private val _smartVocabMessage = MutableStateFlow<String?>(null)
+    val smartVocabMessage: StateFlow<String?> = _smartVocabMessage.asStateFlow()
+
+    private val _showSmartVocabSheet = MutableStateFlow(false)
+    val showSmartVocabSheet: StateFlow<Boolean> = _showSmartVocabSheet.asStateFlow()
+
+    fun dismissSmartVocabSheet() {
+        _showSmartVocabSheet.value = false
+    }
+
+    fun clearSmartVocabMessage() {
+        _smartVocabMessage.value = null
+    }
+
+    fun acceptSmartVocabSuggestion(suggestion: com.example.service.SmartVocabularySuggestion) {
+        com.example.data.CustomVocabularyRepository.addTerm(suggestion.term)
+        _smartVocabSuggestions.update { list -> list.filter { it.id != suggestion.id } }
+        addLog(LogLevel.INFO, TAG, "Accepted smart vocabulary suggestion: '${suggestion.term}'")
+    }
+
+    fun editAndAcceptSmartVocabSuggestion(suggestion: com.example.service.SmartVocabularySuggestion, newTerm: String) {
+        val trimmed = newTerm.trim()
+        if (trimmed.isNotBlank()) {
+            com.example.data.CustomVocabularyRepository.addTerm(trimmed)
+            _smartVocabSuggestions.update { list -> list.filter { it.id != suggestion.id } }
+            addLog(LogLevel.INFO, TAG, "Edited & accepted smart vocabulary suggestion: '$trimmed'")
+        }
+    }
+
+    fun dismissSmartVocabSuggestion(suggestion: com.example.service.SmartVocabularySuggestion) {
+        _smartVocabSuggestions.update { list -> list.filter { it.id != suggestion.id } }
+        addLog(LogLevel.INFO, TAG, "Dismissed smart vocabulary suggestion: '${suggestion.term}'")
+    }
+
+    fun acceptAllSmartVocabSuggestions() {
+        val currentList = _smartVocabSuggestions.value
+        currentList.forEach { suggestion ->
+            com.example.data.CustomVocabularyRepository.addTerm(suggestion.term)
+        }
+        _smartVocabSuggestions.value = emptyList()
+        addLog(LogLevel.INFO, TAG, "Accepted all (${currentList.size}) smart vocabulary suggestions")
+    }
+
+    fun simulateWeeklySmartVocabulary() {
+        if (_isAnalyzingSmartVocab.value) return
+        val sevenDaysAgo = System.currentTimeMillis() - (7 * 24 * 60 * 60 * 1000L)
+        val recentTranscripts = com.example.data.HistoryRepository.historyItems.value.filter {
+            it.timestamp >= sevenDaysAgo && it.text.isNotBlank()
+        }
+
+        if (recentTranscripts.isEmpty()) {
+            _smartVocabMessage.value = "Not enough dictation history yet. Complete real voice typing in your apps over the week to generate smart suggestions!"
+            return
+        }
+
+        val apiKey = effectiveApiKey
+        if (apiKey.isBlank()) {
+            _smartVocabMessage.value = "Gemini API key is not configured. Please set your API key in Settings or Secrets."
+            return
+        }
+
+        _isAnalyzingSmartVocab.value = true
+        _smartVocabMessage.value = null
+
+        viewModelScope.launch {
+            try {
+                val existingVocab = com.example.data.CustomVocabularyRepository.getVocabulary()
+                val result = com.example.service.SmartVocabularyService.analyzeWeeklyTranscripts(
+                    apiKey = apiKey,
+                    transcripts = recentTranscripts,
+                    existingVocabulary = existingVocab
+                )
+                result.onSuccess { suggestions ->
+                    _isAnalyzingSmartVocab.value = false
+                    if (suggestions.isNotEmpty()) {
+                        _smartVocabSuggestions.value = suggestions
+                        _showSmartVocabSheet.value = true
+                    } else {
+                        _smartVocabMessage.value = "No new candidate terms found in the last 7 days of dictations."
+                    }
+                }.onFailure { err ->
+                    _isAnalyzingSmartVocab.value = false
+                    _smartVocabMessage.value = "Smart Vocabulary analysis failed: ${err.message}"
+                }
+            } catch (e: Exception) {
+                _isAnalyzingSmartVocab.value = false
+                _smartVocabMessage.value = "Error during analysis: ${e.message}"
+            }
+        }
+    }
+
+    fun checkWeeklySmartVocabularySchedule() {
+        val lastCheck = prefs.getLong(KEY_LAST_WEEKLY_CHECK_TIME, 0L)
+        val now = System.currentTimeMillis()
+        val oneWeekMs = 7 * 24 * 60 * 60 * 1000L
+        if (now - lastCheck >= oneWeekMs) {
+            val sevenDaysAgo = now - oneWeekMs
+            val recentTranscripts = com.example.data.HistoryRepository.historyItems.value.filter {
+                it.timestamp >= sevenDaysAgo && it.text.isNotBlank()
+            }
+            if (recentTranscripts.size >= 3) {
+                prefs.edit().putLong(KEY_LAST_WEEKLY_CHECK_TIME, now).apply()
+                simulateWeeklySmartVocabulary()
+            }
+        }
     }
 
     override fun onCleared() {

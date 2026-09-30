@@ -33,20 +33,29 @@ class GeminiLiveWebSocketClient(
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // Indefinite read timeout for persistent WebSocket
         .writeTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
+        .pingInterval(15, TimeUnit.SECONDS) // Send OkHttp WebSocket ping every 15s to maintain socket connection across background states
+        .retryOnConnectionFailure(true)
         .build()
 
     private var webSocket: WebSocket? = null
     private val isSetupComplete = AtomicBoolean(false)
     private val isConnecting = AtomicBoolean(false)
     private var activeModel: String = DEFAULT_MODEL
+    private var lastApiKey: String = ""
+    private val hasAttemptedReconnect = AtomicBoolean(false)
 
     val setupComplete: Boolean
         get() = isSetupComplete.get()
 
     private var isSmartMode: Boolean = false
+    private var customVocabularyList: List<String> = emptyList()
 
-    fun connect(apiKey: String, model: String = DEFAULT_MODEL, smartMode: Boolean = false) {
+    fun connect(
+        apiKey: String,
+        model: String = DEFAULT_MODEL,
+        smartMode: Boolean = false,
+        customVocabulary: List<String> = emptyList()
+    ) {
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
             val errMsg = "Gemini API Key is missing or placeholder. Please provide a valid key in Secrets or the Diagnostics sheet."
             onLog(LogLevel.ERROR, TAG, errMsg, null)
@@ -55,33 +64,60 @@ class GeminiLiveWebSocketClient(
             return
         }
 
+        lastApiKey = apiKey
         activeModel = model
         isSmartMode = smartMode
+        customVocabularyList = customVocabulary
+        hasAttemptedReconnect.set(false)
         isSetupComplete.set(false)
         isConnecting.set(true)
         onStateChanged(ConnectionState.Connecting)
 
-        val url = "$WS_BASE_URL?key=$apiKey"
+        connectInternal()
+    }
+
+    private fun connectInternal() {
+        val url = "$WS_BASE_URL?key=$lastApiKey"
         val request = Request.Builder()
             .url(url)
             .build()
 
-        val modeLabel = if (smartMode) "SMART (filler-cleanup + punctuation)" else "VERBATIM (raw fastest)"
-        onLog(LogLevel.INFO, TAG, "Opening WebSocket connection to Gemini Live Transcribe ($model) in $modeLabel mode", null)
+        val modeLabel = if (isSmartMode) "SMART (filler-cleanup + punctuation)" else "VERBATIM (raw fastest)"
+        val vocabCount = customVocabularyList.size
+        onLog(LogLevel.INFO, TAG, "Opening WebSocket connection to Gemini Live Transcribe ($activeModel) in $modeLabel mode with $vocabCount custom vocabulary terms", null)
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isConnecting.set(false)
-                Log.d(TAG, "WebSocket connection opened. Sending Step A initial setup JSON ($modeLabel)...")
-                onLog(LogLevel.INFO, TAG, "WebSocket opened. Sending initial setup payload ($modeLabel)...", null)
+                Log.d(TAG, "WebSocket connection opened. Sending Step A initial setup JSON ($modeLabel, vocab=$vocabCount)...")
+                onLog(LogLevel.INFO, TAG, "WebSocket opened. Sending initial setup payload ($modeLabel, vocab=$vocabCount)...", null)
                 onStateChanged(ConnectionState.ConnectedWaitingSetup)
 
                 // Step A: Send initial setup JSON
-                // Off: inputAudioTranscription = {}
-                // On: inputAudioTranscription = { "mode": "SMART" }
+                // inputAudioTranscription with optional customVocabulary array
                 val transcriptionConfig = JSONObject().apply {
                     if (isSmartMode) {
                         put("mode", "SMART")
+                    }
+                    if (customVocabularyList.isNotEmpty()) {
+                        val vocabArray = org.json.JSONArray()
+                        customVocabularyList.forEach { term ->
+                            val trimmed = term.trim()
+                            if (trimmed.isNotEmpty()) {
+                                vocabArray.put(trimmed)
+                            }
+                        }
+                        put("customVocabulary", vocabArray)
+                    }
+                }
+
+                val systemPromptText = buildString {
+                    append("You are a precise real-time voice typing engine. Ignore continuous background noise such as ceiling fans, air conditioning, road noise, television audio, and distant chatter. Focus exclusively on the primary speaker's voice. Produce clean, punctuated text and remove filler words (um, uh, like) and self-corrections.")
+                    if (customVocabularyList.isNotEmpty()) {
+                        val termsStr = customVocabularyList.filter { it.isNotBlank() }.joinToString(", ")
+                        if (termsStr.isNotBlank()) {
+                            append(" Prioritize and accurately transcribe the following custom vocabulary terms, names, and email addresses with exact casing and spelling: $termsStr.")
+                        }
                     }
                 }
 
@@ -91,7 +127,7 @@ class GeminiLiveWebSocketClient(
                         put("systemInstruction", JSONObject().apply {
                             put("parts", org.json.JSONArray().apply {
                                 put(JSONObject().apply {
-                                    put("text", "You are a precise real-time voice typing engine. Ignore continuous background noise such as ceiling fans, air conditioning, road noise, television audio, and distant chatter. Focus exclusively on the primary speaker's voice. Produce clean, punctuated text and remove filler words (um, uh, like) and self-corrections.")
+                                    put("text", systemPromptText)
                                 })
                             })
                         })
@@ -158,9 +194,14 @@ class GeminiLiveWebSocketClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                val primaryMsg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                val isPingPongTimeout = primaryMsg.contains("ping", ignoreCase = true) ||
+                                       primaryMsg.contains("pong", ignoreCase = true) ||
+                                       primaryMsg.contains("timeout", ignoreCase = true)
+                val endedReason = if (isPingPongTimeout) "ping_timeout" else "connection_drop"
+
                 val errorDetails = buildString {
-                    append("WebSocket connection failed: ")
-                    val primaryMsg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                    append("ended_reason: $endedReason | WebSocket connection failed: ")
                     append(primaryMsg)
                     if (response != null) {
                         append(" [HTTP ${response.code}: ${response.message}]")
@@ -178,10 +219,29 @@ class GeminiLiveWebSocketClient(
                         append(" (Caused by: ${cause.message ?: cause.javaClass.simpleName})")
                     }
                 }
+
+                val wasSetup = isSetupComplete.getAndSet(false)
+                isConnecting.set(false)
+
+                // Perform 1 automatic reconnect attempt if session was active & hasn't re-attempted yet
+                if (wasSetup && !hasAttemptedReconnect.getAndSet(true) && lastApiKey.isNotBlank()) {
+                    val reconnectMsg = "Network hiccup ($primaryMsg). Attempting 1 automatic reconnect..."
+                    Log.i(TAG, reconnectMsg)
+                    onLog(LogLevel.INFO, TAG, reconnectMsg, null)
+                    onStateChanged(ConnectionState.Connecting)
+
+                    try {
+                        val url = "$WS_BASE_URL?key=$lastApiKey"
+                        val request = Request.Builder().url(url).build()
+                        this@GeminiLiveWebSocketClient.webSocket = client.newWebSocket(request, this)
+                        return
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Automatic reconnect failed", e)
+                    }
+                }
+
                 Log.e(TAG, errorDetails, t)
                 onLog(LogLevel.ERROR, TAG, errorDetails, null)
-                isSetupComplete.set(false)
-                isConnecting.set(false)
                 onStateChanged(ConnectionState.Error(errorDetails))
                 onError(errorDetails)
             }

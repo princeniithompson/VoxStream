@@ -456,18 +456,32 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundNotification()
+        return START_STICKY
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         Log.d(TAG, "FloatingBubbleService onCreate")
+        com.example.data.CustomVocabularyRepository.init(this)
 
-        savedStateRegistryController.performRestore(null)
-        lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_CREATE)
-        lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_START)
-        lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_RESUME)
+        try {
+            savedStateRegistryController.performRestore(null)
+            lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_CREATE)
+            lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_START)
+            lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_RESUME)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing lifecycle for floating service", e)
+        }
 
         startForegroundNotification()
-        initOverlayWindow()
+        try {
+            initOverlayWindow()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing overlay window", e)
+        }
     }
 
     private fun buildNotification(contentText: String): Notification {
@@ -482,7 +496,7 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("VoxStream Voice Typing")
             .setContentText(contentText)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
@@ -606,6 +620,7 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
                     val isShrunk by overlayShrunk.collectAsState()
                     val audioAmplitude by overlayAudioAmplitude.collectAsState()
                     val selectedGlowStyleId by FloatingBubbleManager.selectedGlowStyleId.collectAsState()
+                    val selectedFinishingStyleId by FloatingBubbleManager.selectedFinishingStyleId.collectAsState()
 
                     if (isExpanded) {
                         com.example.ui.components.FloatingDictationPopup(
@@ -615,6 +630,7 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
                             isPolishing = polishing,
                             audioAmplitude = audioAmplitude,
                             glowStyleId = selectedGlowStyleId,
+                            finishingStyleId = selectedFinishingStyleId,
                             onCancelClick = { onCancelClicked() },
                             onPolishClick = { onPolishClicked() },
                             onCompleteClick = { onConfirmClicked() },
@@ -973,6 +989,7 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
 
         isRecording = true
         expandToFullSize()
+        FloatingBubbleManager.lockSessionContext(this)
         FloatingBubbleManager.setRecordingState(true)
         triggerHapticFeedback(HapticFeedbackType.TRANSCRIPTION_START)
         expandPanel()
@@ -1014,11 +1031,14 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
         // Acquire WakeLock to keep audio recording alive even if user turns off screen
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (wakeLock?.isHeld == true) {
+                try { wakeLock?.release() } catch (_: Exception) {}
+            }
             wakeLock = powerManager.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "voxstream:floating_voice_typing_wakelock"
             ).apply {
-                acquire(10 * 60 * 1000L /* 10 minutes max */)
+                acquire(30 * 60 * 1000L /* 30 minutes max */)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not acquire WakeLock", e)
@@ -1134,6 +1154,9 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
             onLog = { _, _, _, _ -> },
             onError = { err ->
                 Log.e(TAG, "Gemini Live Error: $err")
+                val isPingTimeout = err.contains("ping", ignoreCase = true) || err.contains("pong", ignoreCase = true) || err.contains("timeout", ignoreCase = true)
+                val endedReasonTag = if (isPingTimeout) "ping_timeout" else "connection_drop"
+
                 com.example.data.AppLogRepository.logEvent(
                     com.example.data.DiagnosticSource.BUBBLE,
                     com.example.data.DiagnosticType.ERROR,
@@ -1146,16 +1169,19 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
                         pendingCompletionTimeoutJob = null
                         performInjectionAndClose()
                     }
+                } else if (isRecording) {
+                    stopVoiceTyping(endedReason = endedReasonTag)
                 }
             }
         ).apply {
-            connect(apiKey = apiKey, model = selectedModel, smartMode = isSmartMode)
+            val customVocab = com.example.data.CustomVocabularyRepository.getVocabulary()
+            connect(apiKey = apiKey, model = selectedModel, smartMode = isSmartMode, customVocabulary = customVocab)
         }
 
         startDurationTimer()
     }
 
-    private fun stopVoiceTyping() {
+    private fun stopVoiceTyping(endedReason: String = "completed") {
         if (!isRecording) return
         isRecording = false
         triggerHapticFeedback(HapticFeedbackType.TRANSCRIPTION_STOP)
@@ -1204,7 +1230,7 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
                 com.example.data.AppLogRepository.logEvent(
                     com.example.data.DiagnosticSource.BUBBLE,
                     com.example.data.DiagnosticType.SESSION_END,
-                    "Duration: ${durationAtEnd}s, Chunks: $chunksAtEnd, Streamed: ${bytesAtEnd / 1024} KB"
+                    "ended_reason: $endedReason | Duration: ${durationAtEnd}s, Chunks: $chunksAtEnd, Streamed: ${bytesAtEnd / 1024} KB"
                 )
             }
 
@@ -1219,67 +1245,33 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
     }
 
     private fun onConfirmClicked() {
+        if (overlayPendingFinalizing.value) return
         overlayPendingFinalizing.value = true
-        val prefs = getSharedPreferences("voxstream_settings", Context.MODE_PRIVATE)
-        val isSmartMode = prefs.getBoolean("smart_mode", false)
 
-        val now = SystemClock.elapsedRealtime()
-        val timeSinceLastUpdate = if (lastTranscriptUpdateTimestamp > 0L) now - lastTranscriptUpdateTimestamp else Long.MAX_VALUE
-        val silenceDurationMs = 2000L
-
-        // Check if smart-waiting state applies:
-        // When Smart Mode is active, check if an update occurred within the last 2 seconds (the silenceDurationMs window),
-        // or if uncommitted interim text is present, or if still awaiting Smart Mode completion frame.
-        val needsSmartWaiting = isSmartMode && (
-            (lastTranscriptUpdateTimestamp > 0L && timeSinceLastUpdate < silenceDurationMs) ||
-            isWaitingForLiveSmartModeCompletion ||
-            interimTranscript.isNotBlank() ||
-            (isRecording && getFullTranscriptText().isNotBlank())
-        )
-
-        if (needsSmartWaiting) {
-            val remainingWaitMs = (silenceDurationMs - timeSinceLastUpdate).coerceIn(350L, silenceDurationMs)
-            Log.d(TAG, "Confirm tapped within smart-waiting window (${timeSinceLastUpdate}ms elapsed, waiting remainder ${remainingWaitMs}ms) -> displaying Finalizing... loader")
-            isPendingInjectionOnSmartCompletion = true
-
-            // Stop sending further microphone audio so the server detects end of speech immediately and finalizes
-            if (isRecording) {
-                isRecording = false
-                FloatingBubbleManager.setRecordingState(false)
-                audioRecorder.stop()
-                serviceScope.launch(Dispatchers.IO) {
-                    try {
-                        webSocketClient?.signalStreamEnd()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error signaling stream end on confirm", e)
-                    }
+        if (isRecording) {
+            isRecording = false
+            FloatingBubbleManager.setRecordingState(false)
+            audioRecorder.stop()
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    webSocketClient?.signalStreamEnd()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error signaling stream end on confirm", e)
                 }
             }
-
-            // Disable all UI controls and display "Finalizing..."
-            btnConfirm?.isEnabled = false
-            btnConfirm?.text = "Finalizing..."
-            btnPolish?.isEnabled = false
-            btnCancel?.isEnabled = false
-            tvStatus?.text = "Finalizing..."
-            statusDot?.setBackgroundResource(R.drawable.bg_dot_pending)
-
-            // Safety timeout: wait for the remainder of the silenceDurationMs window + buffer
-            pendingCompletionTimeoutJob?.cancel()
-            pendingCompletionTimeoutJob = serviceScope.launch {
-                delay(remainingWaitMs + 800L)
-                if (isPendingInjectionOnSmartCompletion) {
-                    Log.w(TAG, "Smart-waiting window elapsed -> injecting available transcript")
-                    isPendingInjectionOnSmartCompletion = false
-                    isWaitingForLiveSmartModeCompletion = false
-                    performInjectionAndClose()
-                }
-            }
-            return
         }
 
-        // Standard flow: immediate injection when already outside the smart-waiting window
-        performInjectionAndClose()
+        btnConfirm?.isEnabled = false
+        btnConfirm?.text = "Completing..."
+        btnPolish?.isEnabled = false
+        btnCancel?.isEnabled = false
+        tvStatus?.text = "Completing..."
+
+        // Delay text injection by 1400ms so the Sunset Mirage shrink-to-N-and-P and slide animation plays completely
+        serviceScope.launch {
+            delay(1400L)
+            performInjectionAndClose()
+        }
     }
 
     private fun performInjectionAndClose() {
@@ -1289,6 +1281,12 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
         }
 
         if (textToInject.isNotBlank()) {
+            val lockedCtx = FloatingBubbleManager.lockedSessionContext.value ?: "AI · VoxStream"
+            com.example.data.HistoryRepository.addHistoryItem(
+                text = textToInject,
+                appContext = lockedCtx,
+                durationSeconds = durationSeconds
+            )
             FloatingBubbleManager.injectOrFallbackToClipboard(this, textToInject)
         }
 
@@ -1317,7 +1315,9 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
             return
         }
 
-        // Show loading state on Polish button INSTANTLY on touch
+        // Show loading state and start finishing animation INSTANTLY on touch
+        overlayPolishing.value = true
+        val polishStartTime = SystemClock.elapsedRealtime()
         btnPolish?.isEnabled = false
         btnConfirm?.isEnabled = false
         btnCancel?.isEnabled = false
@@ -1361,6 +1361,12 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
                     }
                 }
 
+                // Ensure at least 1400ms for animation to play and settle cleanly
+                val elapsed = SystemClock.elapsedRealtime() - polishStartTime
+                if (elapsed < 1400L) {
+                    delay(1400L - elapsed)
+                }
+
                 val polishedText = result?.text
                 if (!polishedText.isNullOrBlank()) {
                     AppLogRepository.addLog(LogLevel.INFO, "PolishAPI", "Polish completed successfully!", polishedText)
@@ -1389,6 +1395,7 @@ class FloatingBubbleService : Service(), androidx.lifecycle.LifecycleOwner, andr
                 }
             } finally {
                 // Restore button UI & unlock polishing
+                overlayPolishing.value = false
                 btnPolish?.isEnabled = true
                 btnConfirm?.isEnabled = true
                 btnCancel?.isEnabled = true
@@ -1575,17 +1582,32 @@ Output: I need 6 chairs for the event.
     }
 
     private fun onCancelClicked() {
+        val durationAtEnd = durationSeconds
+        val chunksAtEnd = sessionChunksSent
+
         overlayPendingFinalizing.value = false
         isPendingInjectionOnSmartCompletion = false
         isWaitingForLiveSmartModeCompletion = false
         pendingCompletionTimeoutJob?.cancel()
         pendingCompletionTimeoutJob = null
-        stopVoiceTyping()
+
+        val wasRecording = isRecording
+        if (wasRecording) {
+            stopVoiceTyping(endedReason = "user_cancelled")
+        } else {
+            com.example.data.AppLogRepository.logEvent(
+                com.example.data.DiagnosticSource.BUBBLE,
+                com.example.data.DiagnosticType.SESSION_END,
+                "ended_reason: user_cancelled | Duration: ${durationAtEnd}s, Chunks: $chunksAtEnd"
+            )
+        }
+
         Toast.makeText(this, "Voice typing cancelled", Toast.LENGTH_SHORT).show()
         resetAndCollapse()
     }
 
     private fun resetAndCollapse() {
+        FloatingBubbleManager.unlockSessionContext()
         overlayPendingFinalizing.value = false
         isPolishingInProgress.set(false)
         isWaitingForLiveSmartModeCompletion = false
@@ -1602,9 +1624,15 @@ Output: I need 6 chairs for the event.
         updateTranscriptDisplay()
         collapsePanel()
 
-        // If keyboard is not currently visible, hide the bubble entirely
-        if (!FloatingBubbleManager.isKeyboardVisible.value) {
+        // Disappear ONLY when BOTH conditions are true:
+        // 1. No active voice-typing session is running, AND
+        // 2. The keyboard is not present.
+        val isKeyboardOpen = FloatingBubbleManager.isKeyboardVisible.value
+        val isSessionActive = isRecording || overlayPendingFinalizing.value || isPolishingInProgress.get()
+        if (!isSessionActive && !isKeyboardOpen) {
             overlayView?.visibility = View.GONE
+        } else {
+            overlayView?.visibility = View.VISIBLE
         }
     }
 
@@ -1619,10 +1647,15 @@ Output: I need 6 chairs for the event.
                 root.visibility = View.VISIBLE
                 resetInactivityTimer(keepShrunk = false)
             } else {
-                // Keyboard disappeared:
-                // Only hide if NOT currently recording AND NOT reviewing transcript!
-                if (!isRecording && !overlayExpanded.value) {
+                // Keyboard disappeared / user switched apps:
+                // Stay visible if a voice-typing session is active!
+                // Disappear ONLY if no session is active AND keyboard is not present.
+                val isSessionActive = isRecording || overlayPendingFinalizing.value || isPolishingInProgress.get()
+                if (!isSessionActive) {
+                    collapsePanel()
                     root.visibility = View.GONE
+                } else {
+                    root.visibility = View.VISIBLE
                 }
             }
         }

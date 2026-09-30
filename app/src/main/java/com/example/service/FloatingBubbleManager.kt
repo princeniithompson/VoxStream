@@ -25,13 +25,30 @@ object FloatingBubbleManager {
     private const val PREFS_NAME = "voxstream_bubble_prefs"
     private const val KEY_BUBBLE_ENABLED = "bubble_enabled"
     private const val KEY_GLOW_STYLE = "glow_animation_style"
-    const val DEFAULT_GLOW_STYLE_ID = "gemini_live"
+    private const val KEY_FINISHING_STYLE = "finishing_animation_style"
+    private const val KEY_COLOR_TONE = "dynamic_color_tone"
+    const val DEFAULT_GLOW_STYLE_ID = "breathing_horizon"
+    const val DEFAULT_FINISHING_STYLE_ID = "pixel_flourish"
+    const val DEFAULT_COLOR_TONE = "luminous"
 
     private val _isBubbleEnabled = MutableStateFlow(false)
     val isBubbleEnabled: StateFlow<Boolean> = _isBubbleEnabled.asStateFlow()
 
     private val _selectedGlowStyleId = MutableStateFlow(DEFAULT_GLOW_STYLE_ID)
     val selectedGlowStyleId: StateFlow<String> = _selectedGlowStyleId.asStateFlow()
+
+    private val _selectedFinishingStyleId = MutableStateFlow(DEFAULT_FINISHING_STYLE_ID)
+    val selectedFinishingStyleId: StateFlow<String> = _selectedFinishingStyleId.asStateFlow()
+
+    private val _selectedColorTone = MutableStateFlow(DEFAULT_COLOR_TONE)
+    val selectedColorTone: StateFlow<String> = _selectedColorTone.asStateFlow()
+
+    // Foreground package tracking & session locking:
+    private val _currentForegroundPackage = MutableStateFlow<String?>(null)
+    val currentForegroundPackage: StateFlow<String?> = _currentForegroundPackage.asStateFlow()
+
+    private val _lockedSessionContext = MutableStateFlow<String?>(null)
+    val lockedSessionContext: StateFlow<String?> = _lockedSessionContext.asStateFlow()
 
     private val _isAccessibilityConnected = MutableStateFlow(false)
     val isAccessibilityConnected: StateFlow<Boolean> = _isAccessibilityConnected.asStateFlow()
@@ -51,7 +68,19 @@ object FloatingBubbleManager {
         if (initialized) return
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         _isBubbleEnabled.value = prefs.getBoolean(KEY_BUBBLE_ENABLED, false)
-        _selectedGlowStyleId.value = prefs.getString(KEY_GLOW_STYLE, DEFAULT_GLOW_STYLE_ID) ?: DEFAULT_GLOW_STYLE_ID
+
+        // Validate saved style; if previously set to one of the removed styles, automatically reset to Breathing Horizon
+        val savedGlowStyle = prefs.getString(KEY_GLOW_STYLE, DEFAULT_GLOW_STYLE_ID) ?: DEFAULT_GLOW_STYLE_ID
+        val validatedGlowStyle = if (com.example.ui.components.GlowAnimationCatalogue.styles.any { it.id == savedGlowStyle }) {
+            savedGlowStyle
+        } else {
+            prefs.edit().putString(KEY_GLOW_STYLE, DEFAULT_GLOW_STYLE_ID).apply()
+            DEFAULT_GLOW_STYLE_ID
+        }
+        _selectedGlowStyleId.value = validatedGlowStyle
+
+        _selectedFinishingStyleId.value = prefs.getString(KEY_FINISHING_STYLE, DEFAULT_FINISHING_STYLE_ID) ?: DEFAULT_FINISHING_STYLE_ID
+        _selectedColorTone.value = prefs.getString(KEY_COLOR_TONE, DEFAULT_COLOR_TONE) ?: DEFAULT_COLOR_TONE
         initialized = true
 
         if (_isBubbleEnabled.value && canDrawOverlays(context)) {
@@ -59,10 +88,27 @@ object FloatingBubbleManager {
         }
     }
 
-    fun setGlowStyle(context: Context, styleId: String) {
-        _selectedGlowStyleId.value = styleId
+    fun setColorTone(context: Context, toneId: String) {
+        _selectedColorTone.value = toneId
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_GLOW_STYLE, styleId).apply()
+        prefs.edit().putString(KEY_COLOR_TONE, toneId).apply()
+    }
+
+    fun setGlowStyle(context: Context, styleId: String) {
+        val validStyle = if (com.example.ui.components.GlowAnimationCatalogue.styles.any { it.id == styleId }) {
+            styleId
+        } else {
+            DEFAULT_GLOW_STYLE_ID
+        }
+        _selectedGlowStyleId.value = validStyle
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_GLOW_STYLE, validStyle).apply()
+    }
+
+    fun setFinishingStyle(context: Context, styleId: String) {
+        _selectedFinishingStyleId.value = styleId
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_FINISHING_STYLE, styleId).apply()
     }
 
     fun canDrawOverlays(context: Context): Boolean {
@@ -122,6 +168,42 @@ object FloatingBubbleManager {
 
     fun setRecordingState(recording: Boolean) {
         _isRecording.value = recording
+    }
+
+    fun updateCurrentForegroundPackage(pkg: String?) {
+        if (!AppContextResolver.isIgnoredPackage(null, pkg)) {
+            _currentForegroundPackage.value = pkg
+        }
+    }
+
+    /**
+     * Locks the detected foreground app + group for the entire duration of the dictation session.
+     * Even if the user switches apps, the locked context remains unchanged until unlockSessionContext() is called.
+     */
+    fun lockSessionContext(context: Context) {
+        if (_lockedSessionContext.value == null) {
+            val a11y = VoxStreamAccessibilityService.instance
+            val currentPkg = a11y?.getActivePackageName()
+                ?: _currentForegroundPackage.value
+            val activeWindow = a11y?.getActiveApplicationWindow()
+            val rootNode = a11y?.rootInActiveWindow
+            val resolved = AppContextResolver.resolve(
+                context = context,
+                packageName = currentPkg,
+                windowInfo = activeWindow,
+                rootNode = rootNode
+            )
+            _lockedSessionContext.value = resolved?.formatted
+            Log.d(TAG, "Locked session context: ${resolved?.formatted} for package: $currentPkg")
+        }
+    }
+
+    /**
+     * Releases the session lock when the dictation session completes, is cancelled, or is dismissed.
+     */
+    fun unlockSessionContext() {
+        _lockedSessionContext.value = null
+        Log.d(TAG, "Unlocked session context")
     }
 
     /**

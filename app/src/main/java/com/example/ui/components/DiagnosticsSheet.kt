@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -129,6 +130,8 @@ fun DiagnosticsBottomSheet(
     onClearAllDiagnostics: () -> Unit,
     onDeleteRecording: (AudioRecording) -> Unit = {},
     onClearAllRecordings: () -> Unit = {},
+    isAnalyzingSmartVocab: Boolean = false,
+    onSimulateWeeklySmartVocab: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -324,7 +327,65 @@ fun DiagnosticsBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Weekly Smart Vocabulary Simulation Card (Testable Simulate Control)
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("simulate_weekly_vocab_card"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Weekly Smart Vocabulary",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Text(
+                            text = "Analyze last 7 days of real transcripts with context-aware Gemini AI",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onSimulateWeeklySmartVocab,
+                        enabled = !isAnalyzingSmartVocab,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("simulate_7_days_button")
+                    ) {
+                        if (isAnalyzingSmartVocab) {
+                            Text("Analyzing...", fontSize = 12.sp)
+                        } else {
+                            Text("Simulate 7 days", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
 
             // Navigation Tabs: Live, History, Notes, Audio
             val tabTitles = listOf("Live", "History", "Notes", "Audio")

@@ -20,6 +20,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         com.example.data.AppLogRepository.init(this)
         com.example.data.AudioRecordingRepository.init(this)
+        com.example.data.CustomVocabularyRepository.init(this)
+        com.example.data.HistoryRepository.init(this)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {

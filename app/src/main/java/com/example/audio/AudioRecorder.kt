@@ -91,41 +91,46 @@ class AudioRecorder(
             val internalBufferSize = maxOf(minBufferSize, CHUNK_SIZE_BYTES * 4)
 
             try {
-                val primarySource = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    MediaRecorder.AudioSource.UNPROCESSED
-                } else {
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION
-                }
-
-                var rec = AudioRecord(
-                    primarySource,
-                    SAMPLE_RATE,
-                    CHANNEL_CONFIG,
-                    AUDIO_FORMAT,
-                    internalBufferSize
+                val candidateSources = mutableListOf(
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.DEFAULT
                 )
-
-                if (rec.state != AudioRecord.STATE_INITIALIZED) {
-                    rec.release()
-                    Log.w(TAG, "UNPROCESSED audio source failed to initialize, falling back to VOICE_RECOGNITION")
-                    rec = AudioRecord(
-                        MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                        SAMPLE_RATE,
-                        CHANNEL_CONFIG,
-                        AUDIO_FORMAT,
-                        internalBufferSize
-                    )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    candidateSources.add(MediaRecorder.AudioSource.UNPROCESSED)
                 }
 
-                audioRecord = rec
+                var rec: AudioRecord? = null
+                for (sourceType in candidateSources) {
+                    try {
+                        val candidate = AudioRecord(
+                            sourceType,
+                            SAMPLE_RATE,
+                            CHANNEL_CONFIG,
+                            AUDIO_FORMAT,
+                            internalBufferSize
+                        )
+                        if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                            rec = candidate
+                            Log.d(TAG, "Successfully initialized AudioRecord with source: $sourceType")
+                            break
+                        } else {
+                            candidate.release()
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Failed creating AudioRecord with source $sourceType: ${t.message}")
+                    }
+                }
 
-                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                    onError("AudioRecord initialization failed (state=${audioRecord?.state}, 16kHz 16-bit mono)")
+                if (rec == null || rec.state != AudioRecord.STATE_INITIALIZED) {
+                    onError("Microphone initialization failed. Please check microphone permission or hardware.")
                     isRecording.set(false)
-                    audioRecord?.release()
+                    rec?.release()
                     audioRecord = null
                     return@launch
                 }
+
+                audioRecord = rec
 
                 val sessionId = audioRecord?.audioSessionId ?: 0
                 if (sessionId != 0) {
