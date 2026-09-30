@@ -161,27 +161,34 @@ class VoxStreamAccessibilityService : AccessibilityService() {
      * field or a placeholder/hint string.
      */
     fun extractGenuineText(node: AccessibilityNodeInfo): String {
-        // 1. Android 8.0+ API check: if the system explicitly flags that the node is showing hint text
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            try {
-                if (node.isShowingHintText) {
-                    return ""
-                }
-            } catch (e: Throwable) {
-                // Ignore fallback
-            }
-        }
-
         val rawText = node.text?.toString() ?: ""
         if (rawText.isBlank()) {
             return ""
         }
 
-        // 2. Direct hint text comparison
+        // 1. Safety override: If the rawText is longer than 15 characters, it is genuine user content / article / text.
+        // WebViews (Chrome), custom editors, and chat apps often erroneously report isShowingHintText = true.
+        // A hint is never a long sentence or paragraph.
+        if (rawText.length > 15) {
+            return rawText
+        }
+
+        // 2. Android 8.0+ API check: if the system explicitly flags that the node is showing hint text (for short strings <= 15 chars)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                if (node.isShowingHintText) {
+                    return ""
+                }
+            } catch (_: Throwable) {
+                // Ignore fallback
+            }
+        }
+
+        // 3. Direct hint text comparison
         val hintText = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             try {
                 node.hintText?.toString()
-            } catch (e: Throwable) {
+            } catch (_: Throwable) {
                 null
             }
         } else {
@@ -192,7 +199,7 @@ class VoxStreamAccessibilityService : AccessibilityService() {
             return ""
         }
 
-        // 3. Known app-specific placeholder strings or common patterns (e.g. Google Search, WhatsApp, Google Keep)
+        // 4. Known app-specific placeholder strings for short text (e.g. Google Search, WhatsApp, Google Keep)
         val trimmed = rawText.trim()
         val knownPlaceholders = setOf(
             "note",
@@ -220,7 +227,6 @@ class VoxStreamAccessibilityService : AccessibilityService() {
             "add a comment..."
         )
         if (knownPlaceholders.contains(trimmed.lowercase())) {
-            // Also check if content description matches or hint matches
             return ""
         }
 
@@ -229,18 +235,19 @@ class VoxStreamAccessibilityService : AccessibilityService() {
 
     /**
      * Injects transcribed text into the target active editable field:
-     * - If an active editable field is present, injects text directly at the caret/cursor
-     *   without touching the system clipboard at all.
-     * - Preserves the user's existing clipboard completely untouched upon successful field injection.
-     * - Returns true if field injection succeeded, or false if no field is available / injection failed
-     *   (which signals FloatingBubbleManager to execute the last-resort clipboard fallback).
+     * - Uses ACTION_SET_TEXT as the primary method with zero clipboard interaction.
+     * - If cursor position (selStart/selEnd) is valid, inserts new text at the cursor.
+     * - If cursor position is -1 but genuineExistingText is NOT blank, appends new text to the end with a space.
+     * - If genuineExistingText is blank, sets the field to the new text.
+     * - Only falls back to performPasteInjection if ACTION_SET_TEXT explicitly fails or returns false.
+     * - Leaves user clipboard completely untouched whenever field injection succeeds.
      */
     fun injectText(newText: String): Boolean {
         if (newText.isEmpty()) return false
         val targetNode = getActiveEditableNode() ?: return false
         val targetPkg = targetNode.packageName?.toString() ?: ""
 
-        // 1. Direct Field Insertion (Zero Clipboard Touch)
+        // Primary Injection: Direct ACTION_SET_TEXT at cursor without touching system clipboard
         try {
             val genuineExistingText = extractGenuineText(targetNode)
             val selStart = try { targetNode.textSelectionStart } catch (_: Throwable) { -1 }
@@ -254,11 +261,13 @@ class VoxStreamAccessibilityService : AccessibilityService() {
                 combinedText = newText
                 newCursorPos = newText.length
             } else if (selStart in 0..fullRawText.length && selEnd in selStart..fullRawText.length) {
+                // Valid selection / cursor position: insert at cursor
                 val before = fullRawText.substring(0, selStart)
                 val after = fullRawText.substring(selEnd)
                 combinedText = before + newText + after
                 newCursorPos = selStart + newText.length
             } else {
+                // Cursor position is invalid (-1) but genuine text exists: append to end with space
                 val spacer = if (genuineExistingText.endsWith(" ") || genuineExistingText.endsWith("\n")) "" else " "
                 combinedText = genuineExistingText + spacer + newText
                 newCursorPos = combinedText.length
@@ -288,19 +297,17 @@ class VoxStreamAccessibilityService : AccessibilityService() {
                     }
                     Log.d(TAG, "Direct field insertion succeeded via ACTION_SET_TEXT (zero clipboard touch, target=$targetPkg)")
                     return true
+                } else {
+                    Log.w(TAG, "ACTION_SET_TEXT returned false on $targetPkg, falling back to performPasteInjection")
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Direct field insertion error: ${e.message}")
+            Log.w(TAG, "Direct field insertion error: ${e.message}, falling back to performPasteInjection")
         }
 
-        // 2. Secondary fallback for apps requiring committed IME paste (e.g. Keep, Notion)
-        if (AppClassifier.isPasteRequired(targetPkg)) {
-            Log.d(TAG, "Attempting secondary verified paste injection for $targetPkg")
-            return performPasteInjection(targetNode, newText)
-        }
-
-        return false
+        // Secondary fallback if ACTION_SET_TEXT explicitly fails or is rejected by custom editor
+        Log.d(TAG, "Attempting secondary fallback paste injection for $targetPkg")
+        return performPasteInjection(targetNode, newText)
     }
 
     /**
