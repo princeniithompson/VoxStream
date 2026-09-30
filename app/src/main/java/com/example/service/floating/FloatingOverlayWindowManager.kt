@@ -19,8 +19,8 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.animation.addListener
 import com.example.service.FloatingBubbleManager
 import com.example.service.VoxStreamAccessibilityService
-import com.example.ui.components.FloatingCollapsedBubble
 import com.example.ui.components.FloatingDictationPopup
+import com.example.ui.components.overlay.FloatingCollapsedBubble
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.math.abs
@@ -146,7 +146,7 @@ class FloatingOverlayWindowManager(private val context: Context) {
                                 FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_HOLD)
                                 resetInactivityTimer(keepShrunk = true)
                             },
-                            onDrag = { dx, dy -> handleOverlayDrag(dx, dy) },
+                            onDrag = { dx: Float, dy: Float -> handleOverlayDrag(dx, dy) },
                             onDragEnd = { handleOverlayDragEnd() }
                         )
                     } else {
@@ -159,7 +159,7 @@ class FloatingOverlayWindowManager(private val context: Context) {
                                 FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_HOLD)
                                 resetInactivityTimer(keepShrunk = true)
                             },
-                            onDrag = { dx, dy -> handleOverlayDrag(dx, dy) },
+                            onDrag = { dx: Float, dy: Float -> handleOverlayDrag(dx, dy) },
                             onDragEnd = { handleOverlayDragEnd() }
                         )
                     }

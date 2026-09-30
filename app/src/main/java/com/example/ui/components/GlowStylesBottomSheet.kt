@@ -40,6 +40,9 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.components.overlay.AuroraColorPalette
+import com.example.ui.components.overlay.getDynamicTonePalette
+import com.example.ui.components.overlay.rememberDynamicAuroraPalette
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
