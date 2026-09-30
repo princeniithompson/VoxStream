@@ -341,8 +341,18 @@ class FloatingBubbleService : Service() {
                     )
                     result = PolishResult(null, err)
                 } else {
+                    val currentPkg = FloatingBubbleManager.currentForegroundPackage.value
+                    val appContext = AppContextResolver.resolve(this@FloatingBubbleService, currentPkg)
+                    val category = AppClassifier.classify(currentPkg, appContext?.appName)
+                    val appName = appContext?.appName ?: "App"
+
                     withContext(Dispatchers.IO) {
-                        result = FloatingPolishClient.polishTranscript(apiKey, rawTranscript)
+                        result = FloatingPolishClient.polishTranscript(
+                            apiKey = apiKey,
+                            rawTranscript = rawTranscript,
+                            category = category,
+                            appName = appName
+                        )
                     }
                 }
 

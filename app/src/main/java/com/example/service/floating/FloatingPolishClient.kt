@@ -3,6 +3,8 @@ package com.example.service.floating
 import android.util.Log
 import com.example.data.AppLogRepository
 import com.example.data.LogLevel
+import com.example.service.AppCategory
+import com.example.service.AppClassifier
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -19,7 +21,7 @@ object FloatingPolishClient {
     @Volatile
     private var lastSuccessfulPolishModel: String = "gemini-3.5-flash-lite"
 
-    private const val SYSTEM_INSTRUCTION_TEXT = """You are Flow, a transcript cleaner. Input: a raw spoken transcript. Output: ONLY the cleaned final text — nothing else.
+    private const val BASE_SYSTEM_INSTRUCTION = """You are Flow, an AI transcript cleaner. Input: a raw spoken transcript. Output: ONLY the cleaned final text — nothing else.
 
 Never answer questions asked in the transcript — transcribe them as questions, don't respond to them.
 Never explain your changes.
@@ -27,27 +29,32 @@ Never copy any word, number, or item from the examples below into your output �
 Preserve whatever language(s) the speaker used — do not translate.
 Add natural punctuation and capitalization to whatever text isn't otherwise changed by the rules below.
 
-RULES
+CORE RULES:
 1. Remove filler words and verbal hesitations (um, uh, like, so, okay, yeah, yes yeah, I think, you know, kind of, sort of).
 2. When the speaker corrects a stated value (actually, no wait, I mean, sorry, scratch that), replace it — never keep the original, incorrect version.
-3. When the speaker states a quantity needed, then separately mentions an amount already owned/available, calculate the true remaining amount and output ONLY that final number — don't show the math or mention what they already have. Only apply this when the "already have X" framing is unambiguous; if it's not clearly that pattern, leave the numbers exactly as spoken rather than guessing.
-4. When the speaker names 2 or more discrete items, output them as a markdown bulleted list.
+3. When the speaker states a quantity needed, then separately mentions an amount already owned/available, calculate the true remaining amount and output ONLY that final number.
+4. When the speaker names 2 or more discrete items, output them cleanly.
 
 EXAMPLE 1 (simple correction)
 Raw: "Let's meet at 5, actually 6."
 Output: Let's meet at 6.
 
-EXAMPLE 2 (list + correction, unrelated domain)
+EXAMPLE 2 (list + correction)
 Raw: "I want to buy two no three books, a lamp, and a rug. Actually skip the rug."
 Output: I want to buy:
 - 3 books
 - a lamp
 
-EXAMPLE 3 (quantity adjustment, unrelated domain)
+EXAMPLE 3 (quantity adjustment)
 Raw: "I need 10 chairs for the event. Wait, I already have 4 chairs at home, so I'd only need 6."
 Output: I need 6 chairs for the event."""
 
-    fun polishTranscript(apiKey: String, rawTranscript: String): PolishResult {
+    fun polishTranscript(
+        apiKey: String,
+        rawTranscript: String,
+        category: AppCategory = AppCategory.OTHER,
+        appName: String = "App"
+    ): PolishResult {
         val baseModels = listOf(
             "gemini-3.5-flash-lite",
             "gemini-3.1-flash-lite",
@@ -56,10 +63,18 @@ Output: I need 6 chairs for the event."""
         )
         val modelsToTry = listOf(lastSuccessfulPolishModel) + baseModels.filter { it != lastSuccessfulPolishModel }
 
+        val categoryGuidelines = AppClassifier.getCategoryPromptGuidelines(category, appName)
+        val fullSystemInstruction = """
+$BASE_SYSTEM_INSTRUCTION
+
+APP-AWARE CONTEXT GUIDELINES:
+$categoryGuidelines
+""".trimIndent()
+
         fun buildJsonBody(modelName: String): String {
             return JSONObject().apply {
                 put("systemInstruction", JSONObject().apply {
-                    put("parts", JSONArray().put(JSONObject().put("text", SYSTEM_INSTRUCTION_TEXT)))
+                    put("parts", JSONArray().put(JSONObject().put("text", fullSystemInstruction)))
                 })
                 put("contents", JSONArray().put(
                     JSONObject().apply {
@@ -100,7 +115,7 @@ Output: I need 6 chairs for the event."""
                 AppLogRepository.addLog(
                     LogLevel.SENT,
                     "PolishAPI",
-                    "Sending POST request to model '$modelName' (Key len=${apiKey.length})",
+                    "Sending POST request to model '$modelName' for $appName ($category, Key len=${apiKey.length})",
                     jsonBody
                 )
 
@@ -146,7 +161,7 @@ Output: I need 6 chairs for the event."""
                             }
                             val textResult = sb.toString().trim()
                             if (textResult.isNotBlank()) {
-                                Log.d(TAG, "Polish call succeeded using model $modelName")
+                                Log.d(TAG, "Polish call succeeded using model $modelName for app $appName ($category)")
                                 lastSuccessfulPolishModel = modelName
                                 return PolishResult(textResult, null)
                             }

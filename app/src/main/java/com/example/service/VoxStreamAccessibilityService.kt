@@ -21,15 +21,6 @@ class VoxStreamAccessibilityService : AccessibilityService() {
         private const val TAG = "VoxStreamAccessService"
         var instance: VoxStreamAccessibilityService? = null
             private set
-
-        private val PASTE_REQUIRED_PACKAGES = setOf(
-            "com.google.android.keep",
-            "com.google.android.apps.docs",
-            "com.google.android.apps.docs.editors.docs",
-            "com.google.android.apps.docs.editors.sheets",
-            "com.google.android.apps.docs.editors.slides",
-            "notion.id"
-        )
     }
 
     private var lastFocusedEditableNode: AccessibilityNodeInfo? = null
@@ -253,8 +244,8 @@ class VoxStreamAccessibilityService : AccessibilityService() {
         val targetNode = getActiveEditableNode() ?: return false
         val targetPkg = targetNode.packageName?.toString() ?: ""
 
-        // Case 1: Target app requires committed IME input via ACTION_PASTE (e.g. Google Keep)
-        if (targetPkg in PASTE_REQUIRED_PACKAGES) {
+        // Case 1: Target app requires committed IME input via ACTION_PASTE (e.g. Google Keep, Notion, Obsidian)
+        if (AppClassifier.isPasteRequired(targetPkg)) {
             Log.d(TAG, "Target app is model-driven ($targetPkg) -> using verified paste injection path")
             return performPasteInjection(targetNode, newText)
         }
@@ -400,8 +391,8 @@ class VoxStreamAccessibilityService : AccessibilityService() {
                 }
 
                 if (isVerified) {
-                    // Paste landed successfully -> restore user's original clipboard
-                    restoreOriginalClipboard(clipboard, originalClip)
+                    // Paste landed successfully -> safely restore user's original clipboard
+                    safeRestoreOriginalClipboard(clipboard, originalClip, newText)
                 } else if (attempts < maxAttempts) {
                     Log.w(TAG, "Paste not yet verified on attempt $attempts. Retrying ACTION_PASTE...")
                     try {
@@ -412,7 +403,7 @@ class VoxStreamAccessibilityService : AccessibilityService() {
                     mainHandler.postDelayed(this, verifyDelayMs)
                 } else {
                     Log.w(TAG, "Paste verification exhausted after $maxAttempts attempts. Restoring clipboard.")
-                    restoreOriginalClipboard(clipboard, originalClip)
+                    safeRestoreOriginalClipboard(clipboard, originalClip, newText)
                 }
             }
         }
@@ -421,21 +412,40 @@ class VoxStreamAccessibilityService : AccessibilityService() {
         return true
     }
 
-    private fun restoreOriginalClipboard(clipboard: ClipboardManager?, originalClip: ClipData?) {
+    /**
+     * Safely restores the original clipboard ONLY IF the current clipboard is STILL
+     * the temporary dictation clip set by VoxStream.
+     * Prevents race conditions where a user copied new data during the verification window.
+     */
+    private fun safeRestoreOriginalClipboard(clipboard: ClipboardManager?, originalClip: ClipData?, expectedDictationText: String) {
         try {
-            if (originalClip != null) {
-                clipboard?.setPrimaryClip(originalClip)
-                Log.d(TAG, "Restored original user clipboard successfully")
+            val currentClip = try { clipboard?.primaryClip } catch (e: Exception) { null }
+
+            val isStillOurDictationClip = if (currentClip != null && currentClip.itemCount > 0) {
+                val currentText = currentClip.getItemAt(0)?.text?.toString() ?: ""
+                val label = currentClip.description?.label?.toString() ?: ""
+                currentText == expectedDictationText || label == "VoxStream Dictation"
             } else {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    clipboard?.clearPrimaryClip()
+                false
+            }
+
+            if (isStillOurDictationClip) {
+                if (originalClip != null) {
+                    clipboard?.setPrimaryClip(originalClip)
+                    Log.d(TAG, "Restored original user clipboard safely (no collision detected)")
                 } else {
-                    clipboard?.setPrimaryClip(ClipData.newPlainText("", ""))
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        clipboard?.clearPrimaryClip()
+                    } else {
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("", ""))
+                    }
+                    Log.d(TAG, "Cleared temporary dictation clip from clipboard")
                 }
-                Log.d(TAG, "Cleared temporary dictation clip from clipboard")
+            } else {
+                Log.i(TAG, "User or external app copied new data during paste verification window. Preserving user's new clipboard content without overwriting!")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed restoring original clipboard: ${e.message}")
+            Log.w(TAG, "Error in safeRestoreOriginalClipboard: ${e.message}")
         }
     }
 
