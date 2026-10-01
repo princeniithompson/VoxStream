@@ -115,10 +115,17 @@ GEMINI_API_KEY=your_actual_gemini_api_key
 # Run unit tests
 ./gradlew testDebugUnitTest
 
-# Build Debug APK
+# Build Debug APK (Signed automatically with debug keystore)
 ./gradlew assembleDebug
 
-# Build Release APK (Minification and resource shrinking enabled)
+# Build Release APK
+# Release builds require valid signing credentials supplied via environment variables.
+# Keystore files (*.jks, *.keystore) and passwords must never be committed to source control.
+export KEYSTORE_PATH="/path/to/your-release-key.jks"
+export STORE_PASSWORD="your-keystore-password"
+export KEY_PASSWORD="your-key-password"
+export KEY_ALIAS="upload" # Optional, defaults to "upload"
+
 ./gradlew assembleRelease
 ```
 

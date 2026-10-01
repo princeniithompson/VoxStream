@@ -57,6 +57,11 @@ Output: I need 6 chairs for the event."""
         aiPolishMode: AiPolishMode? = null,
         conversationContext: String? = null
     ): PolishResult {
+        val trimmedKey = apiKey.trim()
+        if (trimmedKey.isEmpty() || trimmedKey.equals("MY_GEMINI_API_KEY", ignoreCase = true)) {
+            throw IllegalArgumentException("Gemini API Key is missing or placeholder. Please provide a valid key in Settings.")
+        }
+
         val baseModels = listOf(
             "gemini-3.5-flash-lite",
             "gemini-3.1-flash-lite",
@@ -166,20 +171,20 @@ $categoryGuidelines
                     return PolishResult(null, "JSON build error: ${e.message}")
                 }
 
-                val urlString = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey"
+                val urlString = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent"
                 val url = URL(urlString)
 
                 AppLogRepository.addLog(
                     LogLevel.SENT,
                     "PolishAPI",
-                    "Sending POST request to model '$modelName' for $appName ($category, Key len=${apiKey.length})",
+                    "Sending POST request to model '$modelName' for $appName ($category) at $urlString",
                     jsonBody
                 )
 
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    setRequestProperty("x-goog-api-key", apiKey)
+                    setRequestProperty("x-goog-api-key", trimmedKey)
                     setRequestProperty("Connection", "keep-alive")
                     connectTimeout = 5000
                     readTimeout = 8000

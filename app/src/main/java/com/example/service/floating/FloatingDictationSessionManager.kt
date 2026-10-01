@@ -176,7 +176,12 @@ class FloatingDictationSessionManager(
             }
         ).apply {
             val customVocab = CustomVocabularyRepository.getVocabulary()
-            connect(apiKey = apiKey, model = model, smartMode = smartMode, customVocabulary = customVocab)
+            try {
+                connect(apiKey = apiKey, model = model, smartMode = smartMode, customVocabulary = customVocab)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to connect WebSocket: ${e.message}")
+                onError(e.message ?: "Connection error")
+            }
         }
 
         // Duration timer

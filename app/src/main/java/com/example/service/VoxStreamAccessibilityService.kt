@@ -73,7 +73,7 @@ class VoxStreamAccessibilityService : AccessibilityService() {
         }
 
         if (detectedPkg != null) {
-            FloatingBubbleManager.updateCurrentForegroundPackage(detectedPkg)
+            FloatingBubbleManager.updateCurrentForegroundPackage(detectedPkg, this)
         }
 
         when (event.eventType) {
@@ -270,6 +270,10 @@ class VoxStreamAccessibilityService : AccessibilityService() {
      */
     fun injectText(newText: String): Boolean {
         if (newText.isEmpty()) return false
+        if (FloatingBubbleManager.isCurrentAppSensitive.value) {
+            Log.w(TAG, "injectText blocked: Smart Safe Mode is active")
+            return false
+        }
 
         // Priority 1: Modern Android 13+ (API 33+) AccessibilityInputConnection
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -559,6 +563,10 @@ class VoxStreamAccessibilityService : AccessibilityService() {
      * Collects the last 2-3 visible non-editable text snippets (e.g. preceding AI replies).
      */
     fun extractRecentConversationContext(): String? {
+        if (FloatingBubbleManager.isCurrentAppSensitive.value) {
+            Log.w(TAG, "extractRecentConversationContext blocked: Smart Safe Mode is active")
+            return null
+        }
         val targetNode = getActiveEditableNode()
         val root = rootInActiveWindow ?: targetNode ?: return null
         val snippets = mutableListOf<String>()

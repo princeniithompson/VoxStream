@@ -26,19 +26,28 @@ android {
     }
   }
 
+  val envKeystorePath: String? = System.getenv("KEYSTORE_PATH")
+  val envStorePassword: String? = System.getenv("STORE_PASSWORD")
+  val envKeyPassword: String? = System.getenv("KEY_PASSWORD")
+  val envKeyAlias: String = System.getenv("KEY_ALIAS") ?: "upload"
+
   signingConfigs {
-    create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
-    }
+    // Debug signing config strictly gated to debug build type only
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
+    }
+
+    // Release signing config is only created when all required signing credentials are provided
+    if (!envKeystorePath.isNullOrBlank() && !envStorePassword.isNullOrBlank() && !envKeyPassword.isNullOrBlank()) {
+      create("release") {
+        storeFile = file(envKeystorePath)
+        storePassword = envStorePassword
+        keyAlias = envKeyAlias
+        keyPassword = envKeyPassword
+      }
     }
   }
 
@@ -48,7 +57,7 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("release")
+      signingConfig = signingConfigs.findByName("release")
     }
     debug { signingConfig = signingConfigs.getByName("debugConfig") }
   }
@@ -118,3 +127,32 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
+gradle.taskGraph.whenReady {
+  val hasReleaseTask = allTasks.any { task ->
+    task.name.contains("Release", ignoreCase = true) &&
+    !task.name.contains("test", ignoreCase = true) &&
+    !task.name.contains("lint", ignoreCase = true)
+  }
+  if (hasReleaseTask) {
+    val missing = mutableListOf<String>()
+    if (System.getenv("KEYSTORE_PATH").isNullOrBlank()) missing.add("KEYSTORE_PATH")
+    if (System.getenv("STORE_PASSWORD").isNullOrBlank()) missing.add("STORE_PASSWORD")
+    if (System.getenv("KEY_PASSWORD").isNullOrBlank()) missing.add("KEY_PASSWORD")
+
+    if (missing.isNotEmpty()) {
+      throw GradleException(
+        "Release build failed: Missing required environment variable(s) for release signing: ${missing.joinToString(", ")}. " +
+        "Release builds require valid signing credentials and will not fall back to hardcoded or debug keystores."
+      )
+    }
+
+    val keystoreFile = file(System.getenv("KEYSTORE_PATH"))
+    if (!keystoreFile.exists()) {
+      throw GradleException(
+        "Release build failed: Keystore file not found at KEYSTORE_PATH: ${keystoreFile.absolutePath}"
+      )
+    }
+  }
+}
+

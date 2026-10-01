@@ -54,8 +54,11 @@ class FloatingBubbleService : Service() {
     private lateinit var sessionManager: FloatingDictationSessionManager
 
     private val isPolishingInProgress = AtomicBoolean(false)
-    private var lastPolishClickTime = 0L
+    @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
+    internal var lastPolishClickTime = 0L
     private val polishDebounceMs = 800L
+    @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
+    internal var polishDebounceJob: Job? = null
 
     @Volatile
     private var isPendingInjectionOnSmartCompletion = false
@@ -154,7 +157,37 @@ class FloatingBubbleService : Service() {
         }
     }
 
+    fun onSensitiveAppEntered(pkg: String?) {
+        serviceScope.launch(Dispatchers.Main) {
+            val wasRecording = sessionManager.isRecording
+            if (wasRecording) {
+                stopVoiceTyping(endedReason = "smart_safe_mode_triggered")
+                Toast.makeText(
+                    this@FloatingBubbleService,
+                    "🛡️ Smart Safe Mode: Dictation paused for privacy",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            overlayWindowManager.collapsePanel()
+            resetAndCollapse()
+            AppLogRepository.logEvent(
+                DiagnosticSource.BUBBLE,
+                DiagnosticType.SAFE_MODE_TRIGGERED,
+                "Smart Safe Mode engaged for package: $pkg"
+            )
+        }
+    }
+
     private fun onRingClicked() {
+        if (FloatingBubbleManager.isCurrentAppSensitive.value) {
+            FloatingHapticManager.trigger(this, FloatingHapticType.BUBBLE_HOLD)
+            Toast.makeText(
+                this,
+                "🛡️ Smart Safe Mode Active · Dictation is paused in sensitive apps for your privacy.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
         if (overlayWindowManager.overlayShrunk.value) {
             overlayWindowManager.expandToFullSize()
             FloatingHapticManager.trigger(this, FloatingHapticType.BUBBLE_HOLD)
@@ -183,7 +216,7 @@ class FloatingBubbleService : Service() {
         }
 
         val apiKey = getEffectiveApiKey()
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+        if (apiKey.isBlank() || apiKey.trim().equals("MY_GEMINI_API_KEY", ignoreCase = true)) {
             Toast.makeText(this, "Gemini API key is required. Please set it in VoxStream app first.", Toast.LENGTH_LONG).show()
             return
         }
@@ -314,7 +347,8 @@ class FloatingBubbleService : Service() {
             stopVoiceTyping()
         }
 
-        serviceScope.launch {
+        polishDebounceJob?.cancel()
+        polishDebounceJob = serviceScope.launch {
             try {
                 val apiKey = getEffectiveApiKey()
                 var result: PolishResult? = null
@@ -331,7 +365,7 @@ class FloatingBubbleService : Service() {
                     "Transcript length: ${rawTranscript.length} chars"
                 )
 
-                if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+                if (apiKey.isBlank() || apiKey.trim().equals("MY_GEMINI_API_KEY", ignoreCase = true)) {
                     val err = "API key is missing or default placeholder. Please set GEMINI_API_KEY in app Settings."
                     Log.e(TAG, "Polish Error: $err")
                     AppLogRepository.addLog(LogLevel.ERROR, "PolishAPI", err)
@@ -459,7 +493,7 @@ class FloatingBubbleService : Service() {
         if (customKey.isNotBlank()) return customKey
 
         val buildKey = BuildConfig.GEMINI_API_KEY.trim()
-        if (buildKey.isNotBlank() && buildKey != "MY_GEMINI_API_KEY") return buildKey
+        if (buildKey.isNotBlank() && !buildKey.equals("MY_GEMINI_API_KEY", ignoreCase = true)) return buildKey
 
         return ""
     }
@@ -468,13 +502,22 @@ class FloatingBubbleService : Service() {
         super.onDestroy()
         Log.d(TAG, "FloatingBubbleService onDestroy")
 
+        polishDebounceJob?.cancel()
+        polishDebounceJob = null
+        lastPolishClickTime = 0L
+        isPolishingInProgress.set(false)
+
         isPendingInjectionOnSmartCompletion = false
         pendingCompletionTimeoutJob?.cancel()
         pendingCompletionTimeoutJob = null
 
-        stopVoiceTyping()
-        sessionManager.release()
-        overlayWindowManager.onDestroy()
+        if (::sessionManager.isInitialized) {
+            stopVoiceTyping()
+            sessionManager.release()
+        }
+        if (::overlayWindowManager.isInitialized) {
+            overlayWindowManager.onDestroy()
+        }
         serviceScope.cancel()
 
         if (instance == this) {

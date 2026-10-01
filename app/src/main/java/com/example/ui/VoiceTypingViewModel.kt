@@ -88,9 +88,15 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
     val customApiKey: StateFlow<String> = _customApiKey.asStateFlow()
 
     val isBubbleEnabled: StateFlow<Boolean> = com.example.service.FloatingBubbleManager.isBubbleEnabled
+    val isSmartSafeModeEnabled: StateFlow<Boolean> = com.example.service.FloatingBubbleManager.isSmartSafeModeEnabled
+    val isCurrentAppSensitive: StateFlow<Boolean> = com.example.service.FloatingBubbleManager.isCurrentAppSensitive
     val isAccessibilityConnected: StateFlow<Boolean> = com.example.service.FloatingBubbleManager.isAccessibilityConnected
     val selectedGlowStyleId: StateFlow<String> = com.example.service.FloatingBubbleManager.selectedGlowStyleId
     val selectedFinishingStyleId: StateFlow<String> = com.example.service.FloatingBubbleManager.selectedFinishingStyleId
+
+    fun setSmartSafeModeEnabled(enabled: Boolean) {
+        com.example.service.FloatingBubbleManager.setSmartSafeModeEnabled(getApplication(), enabled)
+    }
 
     fun setGlowStyle(styleId: String) {
         com.example.service.FloatingBubbleManager.setGlowStyle(getApplication(), styleId)
@@ -254,8 +260,8 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         }
 
     fun isApiKeyConfigured(): Boolean {
-        val key = effectiveApiKey
-        return key.isNotEmpty() && key != "MY_GEMINI_API_KEY"
+        val key = effectiveApiKey.trim()
+        return key.isNotEmpty() && !key.equals("MY_GEMINI_API_KEY", ignoreCase = true)
     }
 
     fun setCustomApiKey(key: String) {
@@ -329,7 +335,14 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
 
         // 2. Open Gemini Live WebSocket connection
         val customVocab = com.example.data.CustomVocabularyRepository.getVocabulary()
-        webSocketClient.connect(apiKey, _selectedModel.value, _isSmartMode.value, customVocabulary = customVocab)
+        try {
+            webSocketClient.connect(apiKey, _selectedModel.value, _isSmartMode.value, customVocabulary = customVocab)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed connecting WebSocket: ${e.message}")
+            addLog(LogLevel.ERROR, TAG, "Connection failed: ${e.message}")
+            stopRecording(endedReason = "connection_error")
+            return
+        }
 
         // 3. Start recording duration timer
         durationJob?.cancel()

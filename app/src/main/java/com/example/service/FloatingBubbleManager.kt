@@ -27,12 +27,19 @@ object FloatingBubbleManager {
     private const val KEY_GLOW_STYLE = "glow_animation_style"
     private const val KEY_FINISHING_STYLE = "finishing_animation_style"
     private const val KEY_COLOR_TONE = "dynamic_color_tone"
+    private const val KEY_SMART_SAFE_MODE = "smart_safe_mode_enabled"
     const val DEFAULT_GLOW_STYLE_ID = "breathing_horizon"
     const val DEFAULT_FINISHING_STYLE_ID = "pixel_flourish"
     const val DEFAULT_COLOR_TONE = "luminous"
 
     private val _isBubbleEnabled = MutableStateFlow(false)
     val isBubbleEnabled: StateFlow<Boolean> = _isBubbleEnabled.asStateFlow()
+
+    private val _isSmartSafeModeEnabled = MutableStateFlow(true)
+    val isSmartSafeModeEnabled: StateFlow<Boolean> = _isSmartSafeModeEnabled.asStateFlow()
+
+    private val _isCurrentAppSensitive = MutableStateFlow(false)
+    val isCurrentAppSensitive: StateFlow<Boolean> = _isCurrentAppSensitive.asStateFlow()
 
     private val _selectedGlowStyleId = MutableStateFlow(DEFAULT_GLOW_STYLE_ID)
     val selectedGlowStyleId: StateFlow<String> = _selectedGlowStyleId.asStateFlow()
@@ -87,6 +94,7 @@ object FloatingBubbleManager {
 
         _selectedFinishingStyleId.value = prefs.getString(KEY_FINISHING_STYLE, DEFAULT_FINISHING_STYLE_ID) ?: DEFAULT_FINISHING_STYLE_ID
         _selectedColorTone.value = prefs.getString(KEY_COLOR_TONE, DEFAULT_COLOR_TONE) ?: DEFAULT_COLOR_TONE
+        _isSmartSafeModeEnabled.value = prefs.getBoolean(KEY_SMART_SAFE_MODE, true)
         initialized = true
 
         if (_isBubbleEnabled.value && canDrawOverlays(context)) {
@@ -115,6 +123,24 @@ object FloatingBubbleManager {
         _selectedFinishingStyleId.value = styleId
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_FINISHING_STYLE, styleId).apply()
+    }
+
+    fun setSmartSafeModeEnabled(context: Context, enabled: Boolean) {
+        _isSmartSafeModeEnabled.value = enabled
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_SMART_SAFE_MODE, enabled).apply()
+
+        // Re-evaluate current package sensitivity with new setting
+        val currentPkg = _currentForegroundPackage.value
+        val isSensitive = if (enabled) {
+            SafeModeClassifier.isSensitiveApp(context, currentPkg)
+        } else {
+            false
+        }
+        _isCurrentAppSensitive.value = isSensitive
+        if (isSensitive) {
+            FloatingBubbleService.instance?.onSensitiveAppEntered(currentPkg)
+        }
     }
 
     fun canDrawOverlays(context: Context): Boolean {
@@ -176,10 +202,21 @@ object FloatingBubbleManager {
         _isRecording.value = recording
     }
 
-    fun updateCurrentForegroundPackage(pkg: String?) {
-        if (!AppContextResolver.isIgnoredPackage(null, pkg)) {
+    fun updateCurrentForegroundPackage(pkg: String?, context: Context? = null) {
+        if (!AppContextResolver.isIgnoredPackage(context, pkg)) {
             _currentForegroundPackage.value = pkg
             _isCurrentAppAi.value = AppClassifier.isAiChatApp(pkg)
+
+            val isSensitive = if (_isSmartSafeModeEnabled.value) {
+                SafeModeClassifier.isSensitiveApp(context, pkg)
+            } else {
+                false
+            }
+            val wasSensitive = _isCurrentAppSensitive.value
+            _isCurrentAppSensitive.value = isSensitive
+            if (isSensitive && !wasSensitive) {
+                FloatingBubbleService.instance?.onSensitiveAppEntered(pkg)
+            }
         }
     }
 

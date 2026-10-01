@@ -9,6 +9,7 @@ import com.example.data.ConnectionState
 import com.example.data.DiagnosticSource
 import com.example.data.DiagnosticType
 import com.example.data.LogLevel
+import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -20,23 +21,54 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * Structured error types for Gemini Live WebSocket communication.
+ */
+sealed class GeminiLiveError(open val message: String, open val cause: Throwable? = null) {
+    data class MissingApiKey(override val message: String) : GeminiLiveError(message)
+    data class NetworkFailure(override val message: String, override val cause: Throwable? = null) : GeminiLiveError(message, cause)
+    data class ServerError(val code: Int, val status: String, override val message: String) : GeminiLiveError(message)
+    data class ProtocolError(override val message: String, override val cause: Throwable? = null) : GeminiLiveError(message, cause)
+    data class SetupFailed(override val message: String) : GeminiLiveError(message)
+}
+
 class GeminiLiveWebSocketClient(
     private val onSetupComplete: () -> Unit,
     private val onInterimTranscription: (String) -> Unit,
     private val onFinalizedTranscription: (String) -> Unit,
     private val onStateChanged: (ConnectionState) -> Unit,
     private val onLog: (LogLevel, String, String, String?) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    okHttpClient: OkHttpClient? = null,
+    private val onStructuredError: ((GeminiLiveError) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "GeminiLiveWS"
         const val DEFAULT_MODEL = "models/gemini-3.5-transcribe-live"
-        private const val WS_BASE_URL =
+        const val WS_BASE_URL =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         private const val MAX_RECONNECT_ATTEMPTS = 3
+
+        val DEFAULT_CERTIFICATE_PINNER: CertificatePinner = CertificatePinner.Builder()
+            .add("generativelanguage.googleapis.com", "sha256/kIdpMS077tAh+gS+4V74k/Xy49qJ2q69PzVvj/vF1+Q=")
+            .add("generativelanguage.googleapis.com", "sha256/mEflZT5enoR1FuXLgYYGqnVEoZvMF9c2bVB9esBcW5g=")
+            .add("generativelanguage.googleapis.com", "sha256/hxqRlPTuQrg9q2yBoMuMvGzOUMtPF0Ces3w0PC+BCMQ=")
+            .build()
+
+        fun buildWebSocketRequest(apiKey: String): Request {
+            val trimmedKey = apiKey.trim()
+            if (trimmedKey.isEmpty() || trimmedKey.equals("MY_GEMINI_API_KEY", ignoreCase = true)) {
+                throw IllegalArgumentException("Gemini API Key is missing or placeholder. Please provide a valid key in Secrets or Settings.")
+            }
+            return Request.Builder()
+                .url(WS_BASE_URL)
+                .addHeader("x-goog-api-key", trimmedKey)
+                .build()
+        }
     }
 
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    private val client: OkHttpClient = okHttpClient ?: OkHttpClient.Builder()
+        .certificatePinner(DEFAULT_CERTIFICATE_PINNER)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // Indefinite read timeout for persistent WebSocket
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -46,7 +78,7 @@ class GeminiLiveWebSocketClient(
 
     private var webSocket: WebSocket? = null
     private val isSetupComplete = AtomicBoolean(false)
-    private val isConnecting = AtomicBoolean(false)
+    private val isConnectingGuard = AtomicBoolean(false)
     private val isExplicitlyClosed = AtomicBoolean(false)
     private val reconnectAttempts = AtomicInteger(0)
     private var activeModel: String = DEFAULT_MODEL
@@ -58,67 +90,101 @@ class GeminiLiveWebSocketClient(
     val setupComplete: Boolean
         get() = isSetupComplete.get()
 
+    val isConnecting: Boolean
+        get() = isConnectingGuard.get()
+
     val isReconnecting: Boolean
         get() = !isExplicitlyClosed.get() && reconnectAttempts.get() > 0 && !isSetupComplete.get()
+
+    val activeSessionExists: Boolean
+        get() = webSocket != null
 
     private var isSmartMode: Boolean = false
     private var customVocabularyList: List<String> = emptyList()
 
+    /**
+     * Connect to Gemini Live WebSocket.
+     * Guarded with AtomicBoolean to prevent race conditions and concurrent connection attempts.
+     */
     fun connect(
         apiKey: String,
         model: String = DEFAULT_MODEL,
         smartMode: Boolean = false,
         customVocabulary: List<String> = emptyList()
     ) {
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            val errMsg = "Gemini API Key is missing or placeholder. Please provide a valid key in Secrets or the Diagnostics sheet."
+        val trimmedKey = apiKey.trim()
+        if (trimmedKey.isEmpty() || trimmedKey.equals("MY_GEMINI_API_KEY", ignoreCase = true)) {
+            val errMsg = "Gemini API Key is missing or placeholder. Please provide a valid key in Secrets or Settings."
             onLog(LogLevel.ERROR, TAG, errMsg, null)
-            onError(errMsg)
-            onStateChanged(ConnectionState.Error(errMsg))
+            notifyError(errMsg, GeminiLiveError.MissingApiKey(errMsg))
+            notifyStateChanged(ConnectionState.Error(errMsg))
+            throw IllegalArgumentException(errMsg)
+        }
+
+        // Concurrency guard: atomic check-and-set prevents duplicate or overlapping connections
+        if (!isConnectingGuard.compareAndSet(false, true)) {
+            Log.w(TAG, "Connection attempt ignored: connection is already in progress or session active")
             return
         }
 
-        lastApiKey = apiKey
+        // Cancel any pending auto-reconnect before initiating a new connection
+        cancelPendingReconnect()
+
+        // Ensure only one WebSocket session can exist at a time by closing any existing socket
+        closeExistingWebSocket()
+
+        lastApiKey = trimmedKey
         activeModel = model
         isSmartMode = smartMode
         customVocabularyList = customVocabulary
         isExplicitlyClosed.set(false)
         reconnectAttempts.set(0)
         isSetupComplete.set(false)
-        isConnecting.set(true)
-        onStateChanged(ConnectionState.Connecting)
+        notifyStateChanged(ConnectionState.Connecting)
 
         connectInternal()
     }
 
     private fun connectInternal() {
-        if (isExplicitlyClosed.get()) return
+        if (isExplicitlyClosed.get()) {
+            isConnectingGuard.set(false)
+            return
+        }
 
-        val url = "$WS_BASE_URL?key=$lastApiKey"
-        val request = Request.Builder()
-            .url(url)
-            .build()
+        // Cancel any pending reconnect runnable and tear down any lingering socket
+        cancelPendingReconnect()
+        closeExistingWebSocket()
+
+        val request = try {
+            buildWebSocketRequest(lastApiKey)
+        } catch (e: Exception) {
+            isConnectingGuard.set(false)
+            val errMsg = "Failed to build WebSocket request: ${e.message}"
+            notifyError(errMsg, GeminiLiveError.MissingApiKey(errMsg))
+            notifyStateChanged(ConnectionState.Error(errMsg))
+            return
+        }
 
         val modeLabel = if (isSmartMode) "SMART (filler-cleanup + punctuation)" else "VERBATIM (raw fastest)"
         val vocabCount = customVocabularyList.size
         val attemptNum = reconnectAttempts.get()
         if (attemptNum == 0) {
-            onLog(LogLevel.INFO, TAG, "Opening WebSocket connection to Gemini Live Transcribe ($activeModel) in $modeLabel mode with $vocabCount custom vocabulary terms", null)
+            onLog(LogLevel.INFO, TAG, "Opening WebSocket connection to $WS_BASE_URL ($activeModel) in $modeLabel mode with $vocabCount custom vocabulary terms", null)
         } else {
-            onLog(LogLevel.INFO, TAG, "Reconnecting WebSocket (attempt $attemptNum/$MAX_RECONNECT_ATTEMPTS) to Gemini Live Transcribe ($activeModel)...", null)
+            onLog(LogLevel.INFO, TAG, "Reconnecting WebSocket (attempt $attemptNum/$MAX_RECONNECT_ATTEMPTS) to $WS_BASE_URL ($activeModel)...", null)
         }
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (isExplicitlyClosed.get()) {
                     webSocket.close(1000, "Closed by client")
+                    isConnectingGuard.set(false)
                     return
                 }
 
-                isConnecting.set(false)
                 Log.d(TAG, "WebSocket connection opened. Sending Step A initial setup JSON ($modeLabel, vocab=$vocabCount)...")
                 onLog(LogLevel.INFO, TAG, "WebSocket opened. Sending initial setup payload ($modeLabel, vocab=$vocabCount)...", null)
-                onStateChanged(ConnectionState.ConnectedWaitingSetup)
+                notifyStateChanged(ConnectionState.ConnectedWaitingSetup)
 
                 // Step A: Send initial setup JSON
                 val transcriptionConfig = JSONObject().apply {
@@ -180,7 +246,10 @@ class GeminiLiveWebSocketClient(
                 if (sent) {
                     onLog(LogLevel.SENT, TAG, "Setup message sent to server", payload)
                 } else {
-                    onLog(LogLevel.ERROR, TAG, "Failed to send setup message over socket", payload)
+                    val err = "Failed to send setup message over socket"
+                    onLog(LogLevel.ERROR, TAG, err, payload)
+                    notifyStateChanged(ConnectionState.Error(err))
+                    notifyError(err, GeminiLiveError.SetupFailed(err))
                 }
             }
 
@@ -198,7 +267,7 @@ class GeminiLiveWebSocketClient(
                 Log.d(TAG, "WebSocket closing (code: $code, reason: $reasonDetail)")
                 onLog(LogLevel.INFO, TAG, "WebSocket closing (code: $code, reason: $reasonDetail)", null)
                 if (!isExplicitlyClosed.get()) {
-                    onStateChanged(ConnectionState.Stopping)
+                    notifyStateChanged(ConnectionState.Stopping)
                 }
             }
 
@@ -206,11 +275,12 @@ class GeminiLiveWebSocketClient(
                 val reasonDetail = if (reason.isNotBlank()) reason else "No reason provided"
                 Log.d(TAG, "WebSocket closed (code: $code, reason: $reasonDetail)")
                 isSetupComplete.set(false)
-                isConnecting.set(false)
 
                 if (code == 1000 || isExplicitlyClosed.get()) {
+                    isConnectingGuard.set(false)
+                    lastApiKey = ""
                     onLog(LogLevel.INFO, TAG, "WebSocket closed cleanly (code: 1000, reason: $reasonDetail)", null)
-                    onStateChanged(ConnectionState.Idle)
+                    notifyStateChanged(ConnectionState.Idle)
                 } else {
                     handleDisconnectOrFailure("WebSocket closed abnormally (code: $code, reason: $reasonDetail)", null)
                 }
@@ -248,11 +318,11 @@ class GeminiLiveWebSocketClient(
 
     private fun handleDisconnectOrFailure(errorDetails: String, throwable: Throwable?) {
         if (isExplicitlyClosed.get()) {
+            isConnectingGuard.set(false)
             return
         }
 
         isSetupComplete.set(false)
-        isConnecting.set(false)
 
         val attempts = reconnectAttempts.incrementAndGet()
         if (attempts <= MAX_RECONNECT_ATTEMPTS && lastApiKey.isNotBlank()) {
@@ -264,12 +334,15 @@ class GeminiLiveWebSocketClient(
                 DiagnosticType.SESSION_RECONNECT,
                 "Attempting auto-reconnect ($attempts/$MAX_RECONNECT_ATTEMPTS) due to: ${errorDetails.take(120)}"
             )
-            onStateChanged(ConnectionState.Connecting)
+            notifyStateChanged(ConnectionState.Connecting)
 
             val backoffMs = (attempts * 300L).coerceAtMost(1200L)
+            cancelPendingReconnect()
             val runnable = Runnable {
                 if (!isExplicitlyClosed.get()) {
                     connectInternal()
+                } else {
+                    isConnectingGuard.set(false)
                 }
             }
             pendingReconnectRunnable = runnable
@@ -277,7 +350,9 @@ class GeminiLiveWebSocketClient(
             return
         }
 
-        // Retries exhausted or non-retryable
+        // Retries exhausted or non-retryable fatal error
+        isConnectingGuard.set(false)
+        lastApiKey = ""
         val fatalMsg = "ended_reason: connection_failed_after_retries | $errorDetails"
         Log.e(TAG, fatalMsg, throwable)
         onLog(LogLevel.ERROR, TAG, fatalMsg, null)
@@ -286,8 +361,8 @@ class GeminiLiveWebSocketClient(
             DiagnosticType.ERROR,
             "WebSocket failed permanently after $MAX_RECONNECT_ATTEMPTS reconnect attempts"
         )
-        onStateChanged(ConnectionState.Error(fatalMsg))
-        onError(fatalMsg)
+        notifyStateChanged(ConnectionState.Error(fatalMsg))
+        notifyError(fatalMsg, GeminiLiveError.NetworkFailure(fatalMsg, throwable))
     }
 
     private fun handleIncomingMessage(rawJson: String) {
@@ -306,8 +381,8 @@ class GeminiLiveWebSocketClient(
                     "setupComplete acknowledged by Gemini Live!"
                 }
                 onLog(LogLevel.RECEIVED, TAG, ackMsg, rawJson)
-                onStateChanged(ConnectionState.Streaming)
-                onSetupComplete()
+                notifyStateChanged(ConnectionState.Streaming)
+                notifySetupComplete()
                 return
             }
 
@@ -325,8 +400,8 @@ class GeminiLiveWebSocketClient(
                 }
                 Log.e(TAG, detailedError)
                 onLog(LogLevel.ERROR, TAG, detailedError, rawJson)
-                onError(detailedError)
-                onStateChanged(ConnectionState.Error(detailedError))
+                notifyStateChanged(ConnectionState.Error(detailedError))
+                notifyError(detailedError, GeminiLiveError.ServerError(code, status, detailedError))
                 return
             }
 
@@ -339,7 +414,7 @@ class GeminiLiveWebSocketClient(
                     val interimText = interimObj.optString("text")
                     if (interimText.isNotEmpty()) {
                         onLog(LogLevel.RECEIVED, TAG, "Interim: \"$interimText\"", null)
-                        onInterimTranscription(interimText)
+                        notifyInterimTranscription(interimText)
                     }
                 }
 
@@ -349,7 +424,7 @@ class GeminiLiveWebSocketClient(
                     val finalizedText = finalizedObj.optString("text")
                     if (finalizedText.isNotEmpty()) {
                         onLog(LogLevel.RECEIVED, TAG, "Finalized: \"$finalizedText\"", null)
-                        onFinalizedTranscription(finalizedText)
+                        notifyFinalizedTranscription(finalizedText)
                     }
                 }
 
@@ -360,8 +435,10 @@ class GeminiLiveWebSocketClient(
                 onLog(LogLevel.RECEIVED, TAG, "Server message: ${rawJson.take(120)}...", rawJson)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing incoming frame JSON: ${e.message}", e)
+            val err = "Error parsing incoming frame JSON: ${e.message}"
+            Log.e(TAG, err, e)
             onLog(LogLevel.ERROR, TAG, "JSON parse error: ${e.message}", rawJson)
+            notifyError(err, GeminiLiveError.ProtocolError(err, e))
         }
     }
 
@@ -388,6 +465,7 @@ class GeminiLiveWebSocketClient(
             ws.send(chunkJson.toString())
         } catch (e: Exception) {
             Log.e(TAG, "Error sending audio chunk", e)
+            notifyError("Error sending audio chunk: ${e.message}", GeminiLiveError.ProtocolError("Send audio chunk failed", e))
             false
         }
     }
@@ -424,18 +502,76 @@ class GeminiLiveWebSocketClient(
     fun disconnect() {
         isExplicitlyClosed.set(true)
         reconnectAttempts.set(MAX_RECONNECT_ATTEMPTS)
-        pendingReconnectRunnable?.let { mainHandler.removeCallbacks(it) }
-        pendingReconnectRunnable = null
+        cancelPendingReconnect()
+        closeExistingWebSocket()
 
-        try {
-            webSocket?.close(1000, "Normal closure by user")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing WebSocket", e)
-        } finally {
-            webSocket = null
-            isSetupComplete.set(false)
-            isConnecting.set(false)
-            onStateChanged(ConnectionState.Idle)
+        isSetupComplete.set(false)
+        isConnectingGuard.set(false)
+        lastApiKey = ""
+        notifyStateChanged(ConnectionState.Idle)
+    }
+
+    private fun cancelPendingReconnect() {
+        pendingReconnectRunnable?.let {
+            mainHandler.removeCallbacks(it)
+        }
+        pendingReconnectRunnable = null
+    }
+
+    private fun closeExistingWebSocket() {
+        val existing = webSocket
+        webSocket = null
+        if (existing != null) {
+            try {
+                existing.cancel()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error cancelling existing WebSocket: ${e.message}")
+            }
+        }
+    }
+
+    private fun notifyError(message: String, structuredError: GeminiLiveError? = null) {
+        val structured = structuredError ?: GeminiLiveError.NetworkFailure(message)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            onError(message)
+            onStructuredError?.invoke(structured)
+        } else {
+            mainHandler.post {
+                onError(message)
+                onStructuredError?.invoke(structured)
+            }
+        }
+    }
+
+    private fun notifyStateChanged(state: ConnectionState) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            onStateChanged(state)
+        } else {
+            mainHandler.post { onStateChanged(state) }
+        }
+    }
+
+    private fun notifySetupComplete() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            onSetupComplete()
+        } else {
+            mainHandler.post { onSetupComplete() }
+        }
+    }
+
+    private fun notifyInterimTranscription(text: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            onInterimTranscription(text)
+        } else {
+            mainHandler.post { onInterimTranscription(text) }
+        }
+    }
+
+    private fun notifyFinalizedTranscription(text: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            onFinalizedTranscription(text)
+        } else {
+            mainHandler.post { onFinalizedTranscription(text) }
         }
     }
 }

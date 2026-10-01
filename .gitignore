@@ -16,3 +16,8 @@
 local.properties
 .env
 debug.keystore
+
+# Keystores and Signing Secrets
+*.jks
+*.keystore
+my-upload-key.jks

@@ -35,8 +35,9 @@ object SmartVocabularyService {
         transcripts: List<HistoryItem>,
         existingVocabulary: List<String>
     ): Result<List<SmartVocabularySuggestion>> = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("Gemini API key is not configured."))
+        val trimmedKey = apiKey.trim()
+        if (trimmedKey.isEmpty() || trimmedKey.equals("MY_GEMINI_API_KEY", ignoreCase = true)) {
+            return@withContext Result.failure(IllegalArgumentException("Gemini API key is missing or placeholder. Please provide a valid key in Settings."))
         }
         if (transcripts.isEmpty()) {
             return@withContext Result.success(emptyList())
@@ -116,7 +117,7 @@ Analyze these transcripts and output the JSON list of 5-8 smart vocabulary sugge
         for (modelName in candidateModels) {
             var connection: HttpURLConnection? = null
             try {
-                val urlString = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey"
+                val urlString = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent"
                 val url = URL(urlString)
 
                 AppLogRepository.addLog(
@@ -129,7 +130,7 @@ Analyze these transcripts and output the JSON list of 5-8 smart vocabulary sugge
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    setRequestProperty("x-goog-api-key", apiKey)
+                    setRequestProperty("x-goog-api-key", trimmedKey)
                     setRequestProperty("Connection", "keep-alive")
                     connectTimeout = 8000
                     readTimeout = 15000

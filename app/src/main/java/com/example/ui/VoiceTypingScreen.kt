@@ -117,6 +117,7 @@ fun VoiceTypingScreen(
     val isRecording by viewModel.isRecording.collectAsState()
     val isSmartMode by viewModel.isSmartMode.collectAsState()
     val isBubbleEnabled by viewModel.isBubbleEnabled.collectAsState()
+    val isSmartSafeModeEnabled by viewModel.isSmartSafeModeEnabled.collectAsState()
     val isAccessibilityConnected by viewModel.isAccessibilityConnected.collectAsState()
     val isAecEnabled by viewModel.isAecEnabled.collectAsState()
     val isNoiseSuppressorEnabled by viewModel.isNoiseSuppressorEnabled.collectAsState()
@@ -478,6 +479,36 @@ fun VoiceTypingScreen(
                             viewModel.setBubbleEnabled(enabled)
                         },
                         modifier = Modifier.testTag("floating_bubble_switch")
+                    )
+                }
+
+                // Smart Safe Mode Row (Banking, Crypto, Passwords)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Smart Safe Mode 🛡️",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Auto-blocks dictation and locks the bubble into a shield in banking, crypto wallets, and password apps to keep your sensitive info safe.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Switch(
+                        checked = isSmartSafeModeEnabled,
+                        onCheckedChange = { viewModel.setSmartSafeModeEnabled(it) },
+                        modifier = Modifier.testTag("smart_safe_mode_switch")
                     )
                 }
 

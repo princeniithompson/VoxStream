@@ -21,6 +21,7 @@ import com.example.service.FloatingBubbleManager
 import com.example.service.VoxStreamAccessibilityService
 import com.example.ui.components.FloatingDictationPopup
 import com.example.ui.components.overlay.FloatingCollapsedBubble
+import com.example.ui.components.overlay.FloatingSafeModeShieldBadge
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.math.abs
@@ -129,8 +130,20 @@ class FloatingOverlayWindowManager(private val context: Context) {
                     val audioAmplitude by overlayAudioAmplitude.collectAsState()
                     val selectedGlowStyleId by FloatingBubbleManager.selectedGlowStyleId.collectAsState()
                     val selectedFinishingStyleId by FloatingBubbleManager.selectedFinishingStyleId.collectAsState()
+                    val isCurrentAppSensitive by FloatingBubbleManager.isCurrentAppSensitive.collectAsState()
 
-                    if (isExpanded) {
+                    if (isCurrentAppSensitive) {
+                        FloatingSafeModeShieldBadge(
+                            isSnappedToRight = isSnappedToRight,
+                            onClick = onRingClick,
+                            onDragStart = {
+                                FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_HOLD)
+                                resetInactivityTimer(keepShrunk = true)
+                            },
+                            onDrag = { dx: Float, dy: Float -> handleOverlayDrag(dx, dy) },
+                            onDragEnd = { handleOverlayDragEnd() }
+                        )
+                    } else if (isExpanded) {
                         FloatingDictationPopup(
                             transcriptText = transcript,
                             isRecording = recording,
@@ -231,6 +244,7 @@ class FloatingOverlayWindowManager(private val context: Context) {
     }
 
     fun expandPanel() {
+        if (FloatingBubbleManager.isCurrentAppSensitive.value) return
         overlayExpanded.value = true
         val lp = layoutParams ?: return
         val displayMetrics = context.resources.displayMetrics
